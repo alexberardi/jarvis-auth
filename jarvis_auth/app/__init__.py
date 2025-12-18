@@ -1,0 +1,1 @@
+"""Jarvis Auth package initializer (keeps lightweight to avoid side effects)."""

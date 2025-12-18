@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# Environments / tooling
+.venv/
+.env
+.env.local
+.python-version
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Builds / dist
+build/
+dist/
+*.egg-info/
+
+# Docker / Compose overrides
+docker-compose.override.yml
+
