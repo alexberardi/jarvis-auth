@@ -19,7 +19,6 @@ def require_app_client(
     x_jarvis_app_key: str | None = Header(None),
     db: Session = Depends(get_db),
 ) -> models.AppClient:
-    print(x_jarvis_app_id, x_jarvis_app_key)
     if not x_jarvis_app_id or not x_jarvis_app_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing app credentials")
 
