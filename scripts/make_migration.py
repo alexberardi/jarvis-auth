@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import os
 import subprocess
 import sys
@@ -7,9 +7,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def get_venv_python(repo_root: Path) -> str:
+    """Get the venv python path if it exists, otherwise return 'python3'."""
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return "python3"
+
+
 def main():
     if len(sys.argv) < 2:
-        print('Usage: python scripts/make_migration.py "message"')
+        print('Usage: python3 scripts/make_migration.py "message"')
         sys.exit(1)
 
     # Load .env at repo root
@@ -23,7 +31,9 @@ def main():
         os.environ["DATABASE_URL"] = migrations_url
 
     message = sys.argv[1]
-    cmd = ["poetry", "run", "alembic", "revision", "--autogenerate", "-m", message]
+    # Use venv python if available, run alembic directly
+    python_path = get_venv_python(repo_root)
+    cmd = [python_path, "-m", "alembic", "revision", "--autogenerate", "-m", message]
     result = subprocess.run(cmd, cwd=repo_root)
     sys.exit(result.returncode)
 

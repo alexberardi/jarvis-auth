@@ -53,3 +53,44 @@ class AppClient(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+
+class NodeRegistration(Base):
+    """A node registered to a user account."""
+    __tablename__ = "node_registrations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    node_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship("User")
+    service_access: Mapped[list["NodeServiceAccess"]] = relationship(
+        "NodeServiceAccess", back_populates="node", cascade="all, delete-orphan"
+    )
+
+
+class NodeServiceAccess(Base):
+    """Grants a node access to a specific service."""
+    __tablename__ = "node_service_access"
+    __table_args__ = (
+        UniqueConstraint("node_id", "service_id", name="uq_node_service_access"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    node_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("node_registrations.node_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    service_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    granted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    node: Mapped[NodeRegistration] = relationship("NodeRegistration", back_populates="service_access")
+

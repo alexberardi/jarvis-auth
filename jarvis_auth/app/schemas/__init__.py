@@ -1,4 +1,4 @@
-from jarvis_auth.app.schemas import auth, user
+from jarvis_auth.app.schemas import auth, node, user
 
-__all__ = ["auth", "user"]
+__all__ = ["auth", "node", "user"]
 

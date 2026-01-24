@@ -22,11 +22,11 @@ Copy `.env.example` to `.env` and adjust as needed.
 SECRET_KEY=changeme
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
-DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/authdb
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/jarvis_auth_db
 ALGORITHM=HS256
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
-POSTGRES_DB=authdb
+POSTGRES_DB=jarvis_auth_db
 ```
 
 ## Docker Compose

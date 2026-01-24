@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./test.db"
     postgres_user: str = "postgres"
     postgres_password: str = "postgres"
-    postgres_db: str = "authdb"
+    postgres_db: str = "jarvis_auth_db"
 
 
 @lru_cache()
