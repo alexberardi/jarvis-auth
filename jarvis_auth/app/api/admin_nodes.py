@@ -40,17 +40,26 @@ def create_node(payload: node_schema.NodeCreateRequest, db: Session = Depends(ge
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="node_id already exists")
 
-    # Verify user exists
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    # Verify household exists
+    household = db.query(models.Household).filter(
+        models.Household.id == payload.household_id
+    ).first()
+    if not household:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Household not found")
+
+    # Verify registered_by_user_id if provided
+    if payload.registered_by_user_id is not None:
+        user = db.query(models.User).filter(models.User.id == payload.registered_by_user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     raw_key, key_hash = _generate_node_key_and_hash()
     now = datetime.now(timezone.utc)
 
     node = models.NodeRegistration(
         node_id=payload.node_id,
-        user_id=payload.user_id,
+        household_id=payload.household_id,
+        registered_by_user_id=payload.registered_by_user_id,
         node_key_hash=key_hash,
         name=payload.name,
         is_active=True,
@@ -66,7 +75,7 @@ def create_node(payload: node_schema.NodeCreateRequest, db: Session = Depends(ge
             node_id=payload.node_id,
             service_id=service_id,
             granted_at=now,
-            granted_by=None,
+            granted_by=payload.registered_by_user_id,
         )
         db.add(access)
 
@@ -76,7 +85,8 @@ def create_node(payload: node_schema.NodeCreateRequest, db: Session = Depends(ge
     return node_schema.NodeCreateResponse(
         node_id=node.node_id,
         name=node.name,
-        user_id=node.user_id,
+        household_id=node.household_id,
+        registered_by_user_id=node.registered_by_user_id,
         node_key=raw_key,
         created_at=node.created_at,
         services=services,
@@ -90,7 +100,8 @@ def list_nodes(db: Session = Depends(get_db)):
         node_schema.NodeListItem(
             node_id=node.node_id,
             name=node.name,
-            user_id=node.user_id,
+            household_id=node.household_id,
+            registered_by_user_id=node.registered_by_user_id,
             is_active=node.is_active,
             created_at=node.created_at,
             updated_at=node.updated_at,
@@ -112,7 +123,8 @@ def get_node(node_id: str, db: Session = Depends(get_db)):
     return node_schema.NodeDetailResponse(
         node_id=node.node_id,
         name=node.name,
-        user_id=node.user_id,
+        household_id=node.household_id,
+        registered_by_user_id=node.registered_by_user_id,
         is_active=node.is_active,
         created_at=node.created_at,
         updated_at=node.updated_at,

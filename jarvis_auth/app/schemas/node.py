@@ -6,15 +6,17 @@ from pydantic import BaseModel
 # Admin endpoint schemas
 class NodeCreateRequest(BaseModel):
     node_id: str
-    user_id: int
+    household_id: str
     name: str
+    registered_by_user_id: int | None = None
     services: list[str] | None = None
 
 
 class NodeCreateResponse(BaseModel):
     node_id: str
     name: str
-    user_id: int
+    household_id: str
+    registered_by_user_id: int | None = None
     node_key: str
     created_at: datetime
     services: list[str]
@@ -23,7 +25,8 @@ class NodeCreateResponse(BaseModel):
 class NodeListItem(BaseModel):
     node_id: str
     name: str
-    user_id: int
+    household_id: str
+    registered_by_user_id: int | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -36,7 +39,8 @@ class NodeListItem(BaseModel):
 class NodeDetailResponse(BaseModel):
     node_id: str
     name: str
-    user_id: int
+    household_id: str
+    registered_by_user_id: int | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -79,8 +83,9 @@ class ServiceAccessResponse(BaseModel):
 # Internal endpoint schemas (for app-to-app validation)
 class NodeRegisterInternalRequest(BaseModel):
     node_id: str
-    user_id: int
+    household_id: str
     name: str
+    registered_by_user_id: int | None = None
     services: list[str] | None = None
 
 
@@ -98,5 +103,5 @@ class NodeValidateRequest(BaseModel):
 class NodeValidateResponse(BaseModel):
     valid: bool
     node_id: str | None = None
-    user_id: int | None = None
+    household_id: str | None = None
     reason: str | None = None

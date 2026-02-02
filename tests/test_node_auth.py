@@ -59,6 +59,7 @@ def client(db_session):
     from jarvis_auth.app.api import deps
     from jarvis_auth.app.api import admin_app_clients
     from jarvis_auth.app.api import admin_nodes
+    from jarvis_auth.app.api import households
     from jarvis_auth.app.api import internal
     from jarvis_auth.app.api.dependencies import app_auth
 
@@ -71,6 +72,7 @@ def client(db_session):
     app.dependency_overrides[deps.get_db] = override_get_db
     app.dependency_overrides[admin_app_clients.get_db] = override_get_db
     app.dependency_overrides[admin_nodes.get_db] = override_get_db
+    app.dependency_overrides[households.get_db] = override_get_db
     app.dependency_overrides[internal.get_db] = override_get_db
     app.dependency_overrides[app_auth.get_db] = override_get_db
 
@@ -93,6 +95,27 @@ def test_user(db_session):
     db_session.commit()
     db_session.refresh(user)
     return user
+
+
+@pytest.fixture()
+def test_household(db_session, test_user):
+    """Create a test household with the test user as admin."""
+    from jarvis_auth.app.db import models
+    from jarvis_auth.app.db.models import HouseholdRole
+
+    household = models.Household(name="Test Household")
+    db_session.add(household)
+    db_session.flush()
+
+    membership = models.HouseholdMembership(
+        household_id=household.id,
+        user_id=test_user.id,
+        role=HouseholdRole.ADMIN,
+    )
+    db_session.add(membership)
+    db_session.commit()
+    db_session.refresh(household)
+    return household
 
 
 @pytest.fixture()
@@ -121,13 +144,14 @@ def _app_headers(creds: dict):
 
 
 class TestAdminNodeCreate:
-    def test_create_node_success(self, client, test_user):
+    def test_create_node_success(self, client, test_household, test_user):
         resp = client.post(
             "/admin/nodes",
             json={
                 "node_id": "kitchen-pi",
-                "user_id": test_user.id,
+                "household_id": test_household.id,
                 "name": "Kitchen Node",
+                "registered_by_user_id": test_user.id,
                 "services": ["command-center"],
             },
             headers=_admin_headers(),
@@ -136,48 +160,49 @@ class TestAdminNodeCreate:
         body = resp.json()
         assert body["node_id"] == "kitchen-pi"
         assert body["name"] == "Kitchen Node"
-        assert body["user_id"] == test_user.id
+        assert body["household_id"] == test_household.id
+        assert body["registered_by_user_id"] == test_user.id
         assert "node_key" in body
         assert len(body["node_key"]) > 20
         assert body["services"] == ["command-center"]
 
-    def test_create_node_without_services(self, client, test_user):
+    def test_create_node_without_services(self, client, test_household):
         resp = client.post(
             "/admin/nodes",
-            json={"node_id": "living-room-pi", "user_id": test_user.id, "name": "Living Room"},
+            json={"node_id": "living-room-pi", "household_id": test_household.id, "name": "Living Room"},
             headers=_admin_headers(),
         )
         assert resp.status_code == 201
         body = resp.json()
         assert body["services"] == []
 
-    def test_create_node_duplicate_id(self, client, test_user):
+    def test_create_node_duplicate_id(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "dup-node", "user_id": test_user.id, "name": "First"},
+            json={"node_id": "dup-node", "household_id": test_household.id, "name": "First"},
             headers=_admin_headers(),
         )
         resp = client.post(
             "/admin/nodes",
-            json={"node_id": "dup-node", "user_id": test_user.id, "name": "Second"},
+            json={"node_id": "dup-node", "household_id": test_household.id, "name": "Second"},
             headers=_admin_headers(),
         )
         assert resp.status_code == 400
         assert "already exists" in resp.json()["detail"]
 
-    def test_create_node_invalid_user(self, client):
+    def test_create_node_invalid_household(self, client):
         resp = client.post(
             "/admin/nodes",
-            json={"node_id": "orphan-node", "user_id": 9999, "name": "Orphan"},
+            json={"node_id": "orphan-node", "household_id": "00000000-0000-0000-0000-000000000000", "name": "Orphan"},
             headers=_admin_headers(),
         )
         assert resp.status_code == 404
-        assert "User not found" in resp.json()["detail"]
+        assert "Household not found" in resp.json()["detail"]
 
-    def test_create_node_requires_admin(self, client, test_user):
+    def test_create_node_requires_admin(self, client, test_household):
         resp = client.post(
             "/admin/nodes",
-            json={"node_id": "unauth-node", "user_id": test_user.id, "name": "Unauthorized"},
+            json={"node_id": "unauth-node", "household_id": test_household.id, "name": "Unauthorized"},
         )
         assert resp.status_code == 401
 
@@ -188,15 +213,15 @@ class TestAdminNodeList:
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
 
-    def test_list_nodes_with_data(self, client, test_user):
+    def test_list_nodes_with_data(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "node-a", "user_id": test_user.id, "name": "Node A", "services": ["svc1"]},
+            json={"node_id": "node-a", "household_id": test_household.id, "name": "Node A", "services": ["svc1"]},
             headers=_admin_headers(),
         )
         client.post(
             "/admin/nodes",
-            json={"node_id": "node-b", "user_id": test_user.id, "name": "Node B"},
+            json={"node_id": "node-b", "household_id": test_household.id, "name": "Node B"},
             headers=_admin_headers(),
         )
 
@@ -210,10 +235,10 @@ class TestAdminNodeList:
 
 
 class TestAdminNodeDetail:
-    def test_get_node_success(self, client, test_user):
+    def test_get_node_success(self, client, test_household):
         create_resp = client.post(
             "/admin/nodes",
-            json={"node_id": "detail-node", "user_id": test_user.id, "name": "Detail Node", "services": ["svc1", "svc2"]},
+            json={"node_id": "detail-node", "household_id": test_household.id, "name": "Detail Node", "services": ["svc1", "svc2"]},
             headers=_admin_headers(),
         )
         assert create_resp.status_code == 201
@@ -232,10 +257,10 @@ class TestAdminNodeDetail:
 
 
 class TestAdminNodeDeactivate:
-    def test_deactivate_node(self, client, test_user):
+    def test_deactivate_node(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "deactivate-me", "user_id": test_user.id, "name": "To Deactivate"},
+            json={"node_id": "deactivate-me", "household_id": test_household.id, "name": "To Deactivate"},
             headers=_admin_headers(),
         )
 
@@ -255,10 +280,10 @@ class TestAdminNodeDeactivate:
 
 
 class TestAdminNodeRotateKey:
-    def test_rotate_key_success(self, client, test_user):
+    def test_rotate_key_success(self, client, test_household):
         create_resp = client.post(
             "/admin/nodes",
-            json={"node_id": "rotate-node", "user_id": test_user.id, "name": "Rotate Node"},
+            json={"node_id": "rotate-node", "household_id": test_household.id, "name": "Rotate Node"},
             headers=_admin_headers(),
         )
         original_key = create_resp.json()["node_key"]
@@ -277,10 +302,10 @@ class TestAdminNodeRotateKey:
 
 
 class TestAdminServiceAccess:
-    def test_grant_service_access(self, client, test_user):
+    def test_grant_service_access(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "grant-access-node", "user_id": test_user.id, "name": "Grant Access Node"},
+            json={"node_id": "grant-access-node", "household_id": test_household.id, "name": "Grant Access Node"},
             headers=_admin_headers(),
         )
 
@@ -294,10 +319,10 @@ class TestAdminServiceAccess:
         assert body["node_id"] == "grant-access-node"
         assert body["service_id"] == "jarvis-logs"
 
-    def test_grant_duplicate_access(self, client, test_user):
+    def test_grant_duplicate_access(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "dup-access-node", "user_id": test_user.id, "name": "Dup Access Node", "services": ["svc1"]},
+            json={"node_id": "dup-access-node", "household_id": test_household.id, "name": "Dup Access Node", "services": ["svc1"]},
             headers=_admin_headers(),
         )
 
@@ -309,10 +334,10 @@ class TestAdminServiceAccess:
         assert resp.status_code == 400
         assert "already has access" in resp.json()["detail"]
 
-    def test_revoke_service_access(self, client, test_user):
+    def test_revoke_service_access(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "revoke-access-node", "user_id": test_user.id, "name": "Revoke Access Node", "services": ["svc1"]},
+            json={"node_id": "revoke-access-node", "household_id": test_household.id, "name": "Revoke Access Node", "services": ["svc1"]},
             headers=_admin_headers(),
         )
 
@@ -324,10 +349,10 @@ class TestAdminServiceAccess:
         services = [s["service_id"] for s in detail.json()["services"]]
         assert "svc1" not in services
 
-    def test_revoke_nonexistent_access(self, client, test_user):
+    def test_revoke_nonexistent_access(self, client, test_household):
         client.post(
             "/admin/nodes",
-            json={"node_id": "no-access-node", "user_id": test_user.id, "name": "No Access Node"},
+            json={"node_id": "no-access-node", "household_id": test_household.id, "name": "No Access Node"},
             headers=_admin_headers(),
         )
 
@@ -341,13 +366,13 @@ class TestAdminServiceAccess:
 
 
 class TestInternalValidateNode:
-    def test_validate_node_success(self, client, test_user, app_client_creds):
+    def test_validate_node_success(self, client, test_household, app_client_creds):
         # Create node with access to command-center
         create_resp = client.post(
             "/admin/nodes",
             json={
                 "node_id": "validate-node",
-                "user_id": test_user.id,
+                "household_id": test_household.id,
                 "name": "Validate Node",
                 "services": ["command-center"],
             },
@@ -364,12 +389,12 @@ class TestInternalValidateNode:
         body = resp.json()
         assert body["valid"] is True
         assert body["node_id"] == "validate-node"
-        assert body["user_id"] == test_user.id
+        assert body["household_id"] == test_household.id
 
-    def test_validate_node_invalid_key(self, client, test_user, app_client_creds):
+    def test_validate_node_invalid_key(self, client, test_household, app_client_creds):
         client.post(
             "/admin/nodes",
-            json={"node_id": "bad-key-node", "user_id": test_user.id, "name": "Bad Key Node", "services": ["command-center"]},
+            json={"node_id": "bad-key-node", "household_id": test_household.id, "name": "Bad Key Node", "services": ["command-center"]},
             headers=_admin_headers(),
         )
 
@@ -383,10 +408,10 @@ class TestInternalValidateNode:
         assert body["valid"] is False
         assert "Invalid node credentials" in body["reason"]
 
-    def test_validate_node_no_service_access(self, client, test_user, app_client_creds):
+    def test_validate_node_no_service_access(self, client, test_household, app_client_creds):
         create_resp = client.post(
             "/admin/nodes",
-            json={"node_id": "no-access", "user_id": test_user.id, "name": "No Access", "services": []},
+            json={"node_id": "no-access", "household_id": test_household.id, "name": "No Access", "services": []},
             headers=_admin_headers(),
         )
         node_key = create_resp.json()["node_key"]
@@ -401,10 +426,10 @@ class TestInternalValidateNode:
         assert body["valid"] is False
         assert "not authorized" in body["reason"].lower()
 
-    def test_validate_node_inactive(self, client, test_user, app_client_creds):
+    def test_validate_node_inactive(self, client, test_household, app_client_creds):
         create_resp = client.post(
             "/admin/nodes",
-            json={"node_id": "inactive-node", "user_id": test_user.id, "name": "Inactive", "services": ["command-center"]},
+            json={"node_id": "inactive-node", "household_id": test_household.id, "name": "Inactive", "services": ["command-center"]},
             headers=_admin_headers(),
         )
         node_key = create_resp.json()["node_key"]
@@ -441,10 +466,16 @@ class TestInternalValidateNode:
 
 
 class TestInternalRegisterNode:
-    def test_register_node_success(self, client, test_user, app_client_creds):
+    def test_register_node_success(self, client, test_household, test_user, app_client_creds):
         resp = client.post(
             "/internal/nodes/register",
-            json={"node_id": "new-node", "user_id": test_user.id, "name": "New Node", "services": ["command-center"]},
+            json={
+                "node_id": "new-node",
+                "household_id": test_household.id,
+                "name": "New Node",
+                "registered_by_user_id": test_user.id,
+                "services": ["command-center"],
+            },
             headers=_app_headers(app_client_creds),
         )
         assert resp.status_code == 201
@@ -457,11 +488,11 @@ class TestInternalRegisterNode:
         services = [s["service_id"] for s in detail.json()["services"]]
         assert "command-center" in services
 
-    def test_register_node_auto_grants_caller_access(self, client, test_user, app_client_creds):
+    def test_register_node_auto_grants_caller_access(self, client, test_household, app_client_creds):
         """The registering service automatically gets access."""
         resp = client.post(
             "/internal/nodes/register",
-            json={"node_id": "auto-access-node", "user_id": test_user.id, "name": "Auto Access"},
+            json={"node_id": "auto-access-node", "household_id": test_household.id, "name": "Auto Access"},
             headers=_app_headers(app_client_creds),
         )
         assert resp.status_code == 201
@@ -471,34 +502,34 @@ class TestInternalRegisterNode:
         services = [s["service_id"] for s in detail.json()["services"]]
         assert "command-center" in services
 
-    def test_register_node_duplicate(self, client, test_user, app_client_creds):
+    def test_register_node_duplicate(self, client, test_household, app_client_creds):
         client.post(
             "/internal/nodes/register",
-            json={"node_id": "dup-register", "user_id": test_user.id, "name": "First"},
+            json={"node_id": "dup-register", "household_id": test_household.id, "name": "First"},
             headers=_app_headers(app_client_creds),
         )
 
         resp = client.post(
             "/internal/nodes/register",
-            json={"node_id": "dup-register", "user_id": test_user.id, "name": "Second"},
+            json={"node_id": "dup-register", "household_id": test_household.id, "name": "Second"},
             headers=_app_headers(app_client_creds),
         )
         assert resp.status_code == 400
 
-    def test_register_node_requires_app_auth(self, client, test_user):
+    def test_register_node_requires_app_auth(self, client, test_household):
         resp = client.post(
             "/internal/nodes/register",
-            json={"node_id": "no-auth-node", "user_id": test_user.id, "name": "No Auth"},
+            json={"node_id": "no-auth-node", "household_id": test_household.id, "name": "No Auth"},
         )
         assert resp.status_code == 401
 
 
 class TestInternalServiceAccess:
-    def test_grant_service_access_via_internal(self, client, test_user, app_client_creds):
+    def test_grant_service_access_via_internal(self, client, test_household, app_client_creds):
         # Create node
         create_resp = client.post(
             "/internal/nodes/register",
-            json={"node_id": "svc-access-node", "user_id": test_user.id, "name": "Service Access Node"},
+            json={"node_id": "svc-access-node", "household_id": test_household.id, "name": "Service Access Node"},
             headers=_app_headers(app_client_creds),
         )
         assert create_resp.status_code == 201
@@ -512,11 +543,11 @@ class TestInternalServiceAccess:
         assert resp.status_code == 201
         assert resp.json()["service_id"] == "jarvis-logs"
 
-    def test_revoke_service_access_via_internal(self, client, test_user, app_client_creds):
+    def test_revoke_service_access_via_internal(self, client, test_household, app_client_creds):
         # Create node with jarvis-logs access
         client.post(
             "/internal/nodes/register",
-            json={"node_id": "revoke-svc-node", "user_id": test_user.id, "name": "Revoke Svc Node", "services": ["jarvis-logs"]},
+            json={"node_id": "revoke-svc-node", "household_id": test_household.id, "name": "Revoke Svc Node", "services": ["jarvis-logs"]},
             headers=_app_headers(app_client_creds),
         )
 
