@@ -104,4 +104,5 @@ class NodeValidateResponse(BaseModel):
     valid: bool
     node_id: str | None = None
     household_id: str | None = None
+    household_member_ids: list[int] | None = None
     reason: str | None = None

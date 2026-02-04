@@ -81,10 +81,19 @@ def validate_node(
             reason=f"Node is not authorized to access service '{payload.service_id}'",
         )
 
+    # Get household member IDs for voice recognition
+    household_member_ids: list[int] = []
+    if node.household_id:
+        memberships = db.query(models.HouseholdMembership).filter(
+            models.HouseholdMembership.household_id == node.household_id
+        ).all()
+        household_member_ids = [m.user_id for m in memberships]
+
     return node_schema.NodeValidateResponse(
         valid=True,
         node_id=node.node_id,
         household_id=node.household_id,
+        household_member_ids=household_member_ids,
     )
 
 
