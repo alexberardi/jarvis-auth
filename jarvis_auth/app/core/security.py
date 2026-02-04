@@ -1,12 +1,16 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 import secrets
 from typing import Any, Dict, Optional
 
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
+from jose.exceptions import JWTClaimsError
 from passlib.context import CryptContext
 
 from jarvis_auth.app.core.settings import settings
+
+logger = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -49,8 +53,15 @@ def create_refresh_token(data: Dict[str, Any], expires_delta: Optional[timedelta
 def decode_token(token: str) -> Dict[str, Any]:
     try:
         return jwt.decode(token, settings.auth_secret_key, algorithms=[settings.auth_algorithm])
+    except ExpiredSignatureError:
+        logger.debug("Token has expired")
+        raise
+    except JWTClaimsError as exc:
+        logger.debug("Token claims validation failed: %s", exc)
+        raise
     except JWTError as exc:
-        raise exc
+        logger.debug("Token decode failed: %s", exc)
+        raise
 
 
 def generate_refresh_token_pair() -> tuple[str, str]:

@@ -44,8 +44,8 @@ def _setup_remote_logging() -> None:
             logging.getLogger(logger_name).addHandler(_jarvis_handler)
 
         logger.info("📡 Remote logging enabled to jarvis-logs")
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("jarvis_log_client not available, remote logging disabled: %s", exc)
 
 
 def create_app() -> FastAPI:
