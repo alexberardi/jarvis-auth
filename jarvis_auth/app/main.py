@@ -2,13 +2,16 @@ import logging
 import os
 
 from fastapi import FastAPI
+from jarvis_settings_client import create_settings_router
 
 from jarvis_auth.app.api import auth as auth_routes
 from jarvis_auth.app.api import admin_app_clients
 from jarvis_auth.app.api import admin_nodes
 from jarvis_auth.app.api import households
 from jarvis_auth.app.api import internal
+from jarvis_auth.app.api.dependencies.app_auth import require_app_client
 from jarvis_auth.app.db import base, session as db_session
+from jarvis_auth.app.services.settings_service import get_settings_service
 
 # Set up logging
 console_level = os.getenv("JARVIS_LOG_CONSOLE_LEVEL", "WARNING")
@@ -55,6 +58,13 @@ def create_app() -> FastAPI:
     app.include_router(admin_nodes.router, tags=["admin-nodes"])
     app.include_router(households.router, tags=["households"])
     app.include_router(internal.router, tags=["internal"])
+
+    # Settings router from shared library
+    settings_router = create_settings_router(
+        service=get_settings_service(),
+        auth_dependency=require_app_client,
+    )
+    app.include_router(settings_router, prefix="/settings", tags=["settings"])
 
     @app.get("/health")
     def health():
