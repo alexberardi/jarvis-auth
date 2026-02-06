@@ -2,14 +2,16 @@ import logging
 import os
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from jarvis_settings_client import create_settings_router
 
 from jarvis_auth.app.api import auth as auth_routes
 from jarvis_auth.app.api import admin_app_clients
 from jarvis_auth.app.api import admin_nodes
+from jarvis_auth.app.api import admin_users
 from jarvis_auth.app.api import households
 from jarvis_auth.app.api import internal
-from jarvis_auth.app.api.dependencies.app_auth import require_app_client
+from jarvis_auth.app.api.deps import require_settings_auth
 from jarvis_auth.app.db import base, session as db_session
 from jarvis_auth.app.services.settings_service import get_settings_service
 
@@ -53,16 +55,28 @@ def _setup_remote_logging() -> None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Jarvis Auth")
+
+    _allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(auth_routes.router, tags=["auth"])
     app.include_router(admin_app_clients.router, tags=["admin"])
     app.include_router(admin_nodes.router, tags=["admin-nodes"])
+    app.include_router(admin_users.router, tags=["admin-users"])
     app.include_router(households.router, tags=["households"])
     app.include_router(internal.router, tags=["internal"])
 
     # Settings router from shared library
+    # Uses combined auth: superuser JWT OR app-to-app credentials
     settings_router = create_settings_router(
         service=get_settings_service(),
-        auth_dependency=require_app_client,
+        auth_dependency=require_settings_auth,
     )
     app.include_router(settings_router, prefix="/settings", tags=["settings"])
 

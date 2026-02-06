@@ -10,6 +10,7 @@ from jarvis_auth.app.db.session import SessionLocal
 from jarvis_auth.app.db import models
 from jarvis_auth.app.schemas import auth as auth_schema
 from jarvis_auth.app.schemas import user as user_schema
+from jarvis_auth.app.api.deps import get_current_user
 
 router = APIRouter()
 
@@ -29,7 +30,11 @@ def _ensure_username(email: str, username: str | None) -> str:
 
 
 def _create_tokens(db: Session, user: models.User) -> tuple[str, str]:
-    access_token = security.create_access_token({"sub": str(user.id), "email": user.email})
+    access_token = security.create_access_token({
+        "sub": str(user.id),
+        "email": user.email,
+        "is_superuser": user.is_superuser,
+    })
     refresh_token_plain, refresh_hash = security.generate_refresh_token_pair()
     expires_at = security.refresh_token_expiry()
 
@@ -96,11 +101,20 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
-    access_token = security.create_access_token({"sub": str(user.id), "email": user.email})
+    access_token = security.create_access_token({
+        "sub": str(user.id),
+        "email": user.email,
+        "is_superuser": user.is_superuser,
+    })
     # For simplicity, reuse refresh token (rotation optional)
     return auth_schema.TokenResponse(
         access_token=access_token,
         refresh_token=payload.refresh_token,
         user=user_schema.UserOut.model_validate(user),
     )
+
+
+@router.get("/auth/me", response_model=user_schema.UserOut)
+def me(current_user: models.User = Depends(get_current_user)):
+    return user_schema.UserOut.model_validate(current_user)
 

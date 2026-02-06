@@ -58,6 +58,7 @@ def db_session():
 @pytest.fixture()
 def client(db_session):
     from jarvis_auth.app.api import auth as auth_router
+    from jarvis_auth.app.api import deps as deps_module
 
     def override_get_db():
         try:
@@ -66,7 +67,9 @@ def client(db_session):
             pass
 
     app.dependency_overrides[auth_router.get_db] = override_get_db
-    return TestClient(app)
+    app.dependency_overrides[deps_module.get_db] = override_get_db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 def test_register_returns_tokens(client):
@@ -107,4 +110,59 @@ def test_refresh_returns_new_access_token(client):
     payload = security.decode_token(new_access)
     assert payload["sub"]
     assert "exp" in payload
+
+
+def test_register_includes_is_superuser(client):
+    resp = client.post("/auth/register", json={"email": "su_test1@example.com", "password": "password123"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "is_superuser" in data["user"]
+    assert data["user"]["is_superuser"] is False
+
+
+def test_login_includes_is_superuser(client):
+    client.post("/auth/register", json={"email": "su_test2@example.com", "password": "password123"})
+    resp = client.post("/auth/login", json={"email": "su_test2@example.com", "password": "password123"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "is_superuser" in data["user"]
+    assert data["user"]["is_superuser"] is False
+
+
+def test_refresh_includes_is_superuser(client):
+    register = client.post("/auth/register", json={"email": "su_test3@example.com", "password": "password123"})
+    tokens = register.json()
+    resp = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "is_superuser" in data["user"]
+    assert data["user"]["is_superuser"] is False
+
+
+def test_auth_me_returns_current_user(client):
+    register = client.post("/auth/register", json={"email": "me_test@example.com", "password": "password123"})
+    tokens = register.json()
+    access_token = tokens["access_token"]
+    resp = client.get("/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["email"] == "me_test@example.com"
+    assert "is_superuser" in data
+    assert data["is_superuser"] is False
+
+
+def test_auth_me_requires_auth(client):
+    resp = client.get("/auth/me")
+    assert resp.status_code == 401
+
+
+def test_cors_headers_present(client):
+    resp = client.options(
+        "/auth/login",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert resp.headers.get("access-control-allow-origin") is not None
 
