@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app import schemas
@@ -9,10 +9,35 @@ from jarvis_auth.app.services import auth_service
 router = APIRouter()
 
 
-@router.post("/register", response_model=schemas.user.UserRead, status_code=status.HTTP_201_CREATED)
-def register_user(payload: schemas.auth.RegisterRequest, db: Session = Depends(deps.get_db)):
-    user = auth_service.register_user(db, payload)
-    return user
+@router.post("/register", response_model=schemas.auth.RegisterResponse, status_code=status.HTTP_201_CREATED)
+def register_user(
+    payload: schemas.auth.RegisterRequest,
+    db: Session = Depends(deps.get_db),
+    x_household_id: str | None = Header(None, alias="X-Household-Id"),
+):
+    """
+    Register a new user and return tokens (auto-login).
+
+    If X-Household-Id header is provided, joins that household as a member.
+    If not provided, creates a new "My Home" household and makes user admin.
+    """
+    user, household_id = auth_service.register_user(db, payload, x_household_id)
+
+    # Generate tokens (auto-login on register)
+    access_token = security.create_access_token({"sub": str(user.id), "email": user.email})
+    refresh_token, refresh_hash, expires_at = auth_service.build_refresh_token()
+    auth_service.store_refresh_token(db, user, refresh_hash, expires_at)
+
+    return schemas.auth.RegisterResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=schemas.user.UserOut(
+            id=user.id,
+            email=user.email,
+            username=user.username,
+        ),
+        household_id=household_id,
+    )
 
 
 @router.post("/login", response_model=schemas.auth.TokenResponse)

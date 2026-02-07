@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VIRTUALENVS_CREATE=0 \
     POETRY_HOME="/opt/poetry"
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
 RUN pip install --upgrade pip && pip install "poetry==1.8.3"
 
 COPY pyproject.toml poetry.lock ./
