@@ -250,6 +250,39 @@ def revoke_service_access_internal(
     return None
 
 
+@router.delete(
+    "/internal/nodes/{node_id}",
+    response_model=node_schema.NodeDeactivateResponse,
+)
+def deactivate_node_internal(
+    node_id: str,
+    app_client: models.AppClient = Depends(require_app_client),
+    db: Session = Depends(get_db),
+):
+    """Deactivate a node.
+
+    Sets is_active=False rather than deleting, preserving audit history.
+    The node will fail validation until reactivated.
+    """
+    node = db.query(models.NodeRegistration).filter(
+        models.NodeRegistration.node_id == node_id
+    ).first()
+
+    if not node:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Node not found",
+        )
+
+    node.is_active = False
+    db.commit()
+
+    return node_schema.NodeDeactivateResponse(
+        node_id=node.node_id,
+        is_active=node.is_active,
+    )
+
+
 # ============================================================
 # Household Validation Endpoints
 # ============================================================
