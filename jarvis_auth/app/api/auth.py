@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.core import security
 from jarvis_auth.app.core.settings import settings
 from jarvis_auth.app.db.session import SessionLocal
 from jarvis_auth.app.db import models
+from jarvis_auth.app.db.models import HouseholdRole
 from jarvis_auth.app.schemas import auth as auth_schema
 from jarvis_auth.app.schemas import user as user_schema
 from jarvis_auth.app.api.deps import get_current_user
@@ -49,8 +50,58 @@ def _create_tokens(db: Session, user: models.User) -> tuple[str, str]:
     return access_token, refresh_token_plain
 
 
-@router.post("/auth/register", response_model=auth_schema.TokenResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: auth_schema.RegisterRequest, db: Annotated[Session, Depends(get_db)]):
+def _assign_household(
+    db: Session,
+    user: models.User,
+    household_id: str | None,
+) -> str:
+    """Assign user to a household, creating one if needed.
+
+    If household_id is provided, joins that household as a member.
+    If not provided, creates a new "My Home" household and makes user admin.
+
+    Returns the household_id.
+    """
+    now = datetime.now(timezone.utc)
+
+    if household_id:
+        household = db.query(models.Household).filter(
+            models.Household.id == household_id
+        ).first()
+        if not household:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Household not found",
+            )
+        role = HouseholdRole.MEMBER
+    else:
+        household = models.Household(name="My Home", created_at=now)
+        db.add(household)
+        db.flush()
+        household_id = household.id
+        role = HouseholdRole.ADMIN
+
+    membership = models.HouseholdMembership(
+        household_id=household_id,
+        user_id=user.id,
+        role=role,
+        created_at=now,
+    )
+    db.add(membership)
+    return household_id
+
+
+@router.post("/auth/register", response_model=auth_schema.RegisterResponse, status_code=status.HTTP_201_CREATED)
+def register(
+    payload: auth_schema.RegisterRequest,
+    db: Annotated[Session, Depends(get_db)],
+    x_household_id: str | None = Header(None, alias="X-Household-Id"),
+):
+    """Register a new user and return tokens (auto-login).
+
+    If X-Household-Id header is provided, joins that household as a member.
+    If not provided, creates a new "My Home" household and makes user admin.
+    """
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
@@ -59,14 +110,18 @@ def register(payload: auth_schema.RegisterRequest, db: Annotated[Session, Depend
     username = _ensure_username(payload.email, payload.username)
     user = models.User(email=payload.email, username=username, password_hash=hashed_pw, is_active=True)
     db.add(user)
+    db.flush()
+
+    household_id = _assign_household(db, user, x_household_id)
     db.commit()
     db.refresh(user)
 
     access_token, refresh_token = _create_tokens(db, user)
-    return auth_schema.TokenResponse(
+    return auth_schema.RegisterResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         user=user_schema.UserOut.model_validate(user),
+        household_id=household_id,
     )
 
 

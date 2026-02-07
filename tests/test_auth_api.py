@@ -82,6 +82,61 @@ def test_register_returns_tokens(client):
     assert data["user"]["email"] == "user@example.com"
 
 
+def test_register_auto_creates_household(client):
+    resp = client.post("/auth/register", json={"email": "household_auto@example.com", "password": "password123"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "household_id" in data
+    assert data["household_id"]  # non-empty
+
+    # Verify user is admin of the auto-created household
+    token = data["access_token"]
+    households_resp = client.get("/households", headers={"Authorization": f"Bearer {token}"})
+    assert households_resp.status_code == 200
+    households = households_resp.json()
+    assert len(households) == 1
+    assert households[0]["name"] == "My Home"
+    assert households[0]["role"] == "admin"
+    assert households[0]["id"] == data["household_id"]
+
+
+def test_register_joins_existing_household(client, db_session):
+    from jarvis_auth.app.db import models
+
+    # Create a household first
+    household = models.Household(name="Existing Home")
+    db_session.add(household)
+    db_session.commit()
+    db_session.refresh(household)
+
+    resp = client.post(
+        "/auth/register",
+        json={"email": "household_join@example.com", "password": "password123"},
+        headers={"X-Household-Id": household.id},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["household_id"] == household.id
+
+    # Verify user is member (not admin) of the existing household
+    token = data["access_token"]
+    households_resp = client.get("/households", headers={"Authorization": f"Bearer {token}"})
+    assert households_resp.status_code == 200
+    households_list = households_resp.json()
+    assert len(households_list) == 1
+    assert households_list[0]["role"] == "member"
+
+
+def test_register_invalid_household_id(client):
+    resp = client.post(
+        "/auth/register",
+        json={"email": "bad_household@example.com", "password": "password123"},
+        headers={"X-Household-Id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert resp.status_code == 400
+    assert "Household not found" in resp.json()["detail"]
+
+
 def test_login_returns_tokens(client):
     client.post("/auth/register", json={"email": "user2@example.com", "password": "password123"})
     resp = client.post("/auth/login", json={"email": "user2@example.com", "password": "password123"})
