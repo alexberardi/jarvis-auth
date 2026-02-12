@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.core import security
-from jarvis_auth.app.core.settings import settings
 from jarvis_auth.app.db.session import SessionLocal
 from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
