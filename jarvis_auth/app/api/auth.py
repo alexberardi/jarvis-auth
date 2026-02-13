@@ -172,3 +172,47 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
 def me(current_user: models.User = Depends(get_current_user)):
     return user_schema.UserOut.model_validate(current_user)
 
+
+@router.get("/auth/setup-status")
+def setup_status(db: Annotated[Session, Depends(get_db)]):
+    """Check if initial setup is needed (no superusers exist)."""
+    has_superuser = db.query(models.User).filter(
+        models.User.is_superuser == True
+    ).first() is not None
+    return {"needs_setup": not has_superuser}
+
+
+@router.post("/auth/setup", response_model=auth_schema.RegisterResponse, status_code=status.HTTP_201_CREATED)
+def initial_setup(payload: auth_schema.RegisterRequest, db: Annotated[Session, Depends(get_db)]):
+    """Create the first superuser. Only works when no superusers exist."""
+    has_superuser = db.query(models.User).filter(
+        models.User.is_superuser == True
+    ).first() is not None
+    if has_superuser:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Setup already completed")
+
+    existing = db.query(models.User).filter(models.User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+
+    hashed_pw = security.hash_password(payload.password)
+    username = _ensure_username(payload.email, payload.username)
+    user = models.User(
+        email=payload.email, username=username, password_hash=hashed_pw,
+        is_active=True, is_superuser=True,
+    )
+    db.add(user)
+    db.flush()
+
+    household_id = _assign_household(db, user, None)
+    db.commit()
+    db.refresh(user)
+
+    access_token, refresh_token = _create_tokens(db, user)
+    return auth_schema.RegisterResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=user_schema.UserOut.model_validate(user),
+        household_id=household_id,
+    )
+

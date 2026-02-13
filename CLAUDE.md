@@ -32,6 +32,7 @@ jarvis_auth/app/
 │   ├── models.py        # User, RefreshToken, AppClient, Node
 │   └── session.py       # Database connection
 └── core/
+    ├── logging.py       # Jarvis logging setup
     └── security.py      # JWT, password hashing
 ```
 
@@ -43,6 +44,10 @@ jarvis_auth/app/
 | `SECRET_KEY` | - | JWT signing key (required) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | 30 | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | 7 | Refresh token lifetime |
+| `JARVIS_APP_ID` | jarvis-auth | App-to-app ID for logging |
+| `JARVIS_APP_KEY` | - | App-to-app key for logging |
+| `JARVIS_LOG_CONSOLE_LEVEL` | WARNING | Console log level |
+| `JARVIS_LOG_REMOTE_LEVEL` | DEBUG | Remote log level |
 
 ## API Endpoints
 

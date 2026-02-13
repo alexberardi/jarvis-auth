@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
-import logging
 import secrets
 from typing import Any, Dict, Optional
 
@@ -8,9 +7,10 @@ from jose import ExpiredSignatureError, JWTError, jwt
 from jose.exceptions import JWTClaimsError
 from passlib.context import CryptContext
 
+from jarvis_auth.app.core.logging import get_logger
 from jarvis_auth.app.core.settings import settings
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -57,10 +57,10 @@ def decode_token(token: str) -> Dict[str, Any]:
         logger.debug("Token has expired")
         raise
     except JWTClaimsError as exc:
-        logger.debug("Token claims validation failed: %s", exc)
+        logger.debug("Token claims validation failed", error=str(exc))
         raise
     except JWTError as exc:
-        logger.debug("Token decode failed: %s", exc)
+        logger.debug("Token decode failed", error=str(exc))
         raise
 
 

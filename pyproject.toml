@@ -20,6 +20,7 @@ pydantic-settings = ">=2.1.0"
 python-multipart = ">=0.0.6"
 httpx = ">=0.25.2"
 email-validator = ">=2.1.0"
+jarvis-log-client = { git = "https://github.com/alexberardi/jarvis-log-client.git" }
 jarvis-settings-client = { git = "https://github.com/alexberardi/jarvis-settings-client.git" }
 
 [tool.poetry.group.dev.dependencies]

@@ -5,11 +5,7 @@ Settings are stored in the database with fallback to environment variables.
 Uses the shared jarvis-settings-client library.
 """
 
-import logging
-
 from jarvis_settings_client import SettingDefinition, SettingsService
-
-logger = logging.getLogger(__name__)
 
 
 # Auth settings definitions
