@@ -77,6 +77,29 @@ Validate by calling `/internal/validate-app`.
 
 ## Dependencies
 
+**Python Libraries:**
 - FastAPI, SQLAlchemy, Alembic (migrations)
 - python-jose (JWT), passlib (bcrypt)
 - httpx, jarvis-log-client
+
+**Service Dependencies:**
+- ✅ **Required**: PostgreSQL - Database for users, tokens, app clients, nodes
+- ⚠️ **Optional**: `jarvis-logs` (8006) - Centralized logging (degrades to console if unavailable)
+- ⚠️ **Optional**: `jarvis-config-service` (8013) - Service discovery
+
+**Used By:**
+- `jarvis-command-center` - Node authentication validation
+- `jarvis-whisper-api` - Node authentication validation
+- `jarvis-ocr-service` - App-to-app authentication validation
+- `jarvis-tts` - Node authentication validation
+- `jarvis-logs` - App-to-app authentication validation
+- `jarvis-settings-server` - JWT validation (superuser)
+- `jarvis-admin` - User login and JWT tokens
+- `jarvis-mcp` - Service discovery and health checks
+
+**Impact if Down:**
+- ❌ No new user logins
+- ❌ No app-to-app authentication validation
+- ❌ No node authentication validation
+- ✅ Existing JWT tokens continue to work (validated locally by services)
+- ✅ Services with cached auth continue temporarily

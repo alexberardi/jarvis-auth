@@ -11,6 +11,7 @@ __pycache__/
 
 # Environments / tooling
 .venv/
+venv/
 .env
 .env.local
 .python-version
