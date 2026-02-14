@@ -18,6 +18,22 @@ services:
       - ../jarvis-settings-client:/app/jarvis-settings-client
     restart: unless-stopped
 
+  postgres:
+    profiles: ["standalone"]
+    image: postgres:15
+    environment:
+      POSTGRES_DB: jarvis_auth
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - auth-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
-  postgres_data:
+  auth-pg-data:
 
