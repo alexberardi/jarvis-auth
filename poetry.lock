@@ -601,6 +601,28 @@ files = [
 ]
 
 [[package]]
+name = "jarvis-log-client"
+version = "0.2.0"
+description = "Centralized logging client for jarvis microservices"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = []
+develop = false
+
+[package.dependencies]
+httpx = ">=0.24.0"
+
+[package.extras]
+dev = ["pytest (>=7.0.0)", "pytest-asyncio (>=0.21.0)"]
+
+[package.source]
+type = "git"
+url = "https://github.com/alexberardi/jarvis-log-client.git"
+reference = "HEAD"
+resolved_reference = "09b3e96061c472edc8d66e05e856d9f976b125c8"
+
+[[package]]
 name = "jarvis-settings-client"
 version = "0.1.0"
 description = "Shared settings library for jarvis microservices with multi-tenant support"
@@ -1704,4 +1726,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "50ad349c0c6dd05649782fe0aa2c79015097b56437e7b41ef84fdb1fd22c0706"
+content-hash = "c6c44b1e5efefdaeebe7fc9fd126d0e95670bc3e8f197020b5ed48919a567327"
