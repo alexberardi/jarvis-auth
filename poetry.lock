@@ -634,6 +634,7 @@ develop = false
 
 [package.dependencies]
 fastapi = ">=0.100.0"
+httpx = ">=0.24.0"
 pydantic = ">=2.0.0"
 sqlalchemy = ">=2.0.0"
 
@@ -644,7 +645,7 @@ dev = ["pytest (>=7.0.0)", "pytest-cov (>=4.0.0)"]
 type = "git"
 url = "https://github.com/alexberardi/jarvis-settings-client.git"
 reference = "HEAD"
-resolved_reference = "ca041804ee723b48bb00b780d28ebf5868781367"
+resolved_reference = "a151614504035ecbec54b5fdb88ddabccf26ee12"
 
 [[package]]
 name = "mako"
