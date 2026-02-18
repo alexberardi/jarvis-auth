@@ -10,7 +10,7 @@ poetry install
 cp .env.example .env
 alembic upgrade head
 
-# Run (port 8007 via docker, 8000 direct)
+# Run (port 7701 via docker, 8000 direct)
 docker-compose up --build
 # or: uvicorn jarvis_auth.app.main:app --reload
 
@@ -84,8 +84,8 @@ Validate by calling `/internal/validate-app`.
 
 **Service Dependencies:**
 - ✅ **Required**: PostgreSQL - Database for users, tokens, app clients, nodes
-- ⚠️ **Optional**: `jarvis-logs` (8006) - Centralized logging (degrades to console if unavailable)
-- ⚠️ **Optional**: `jarvis-config-service` (8013) - Service discovery
+- ⚠️ **Optional**: `jarvis-logs` (7702) - Centralized logging (degrades to console if unavailable)
+- ⚠️ **Optional**: `jarvis-config-service` (7700) - Service discovery
 
 **Used By:**
 - `jarvis-command-center` - Node authentication validation

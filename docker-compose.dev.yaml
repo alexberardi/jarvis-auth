@@ -8,7 +8,7 @@ services:
     extra_hosts:
       - "${DOCKER_HOST_ALIAS:-host.docker.internal}:host-gateway"
     ports:
-      - "${JARVIS_AUTH_PORT:-8007}:8000"
+      - "${JARVIS_AUTH_PORT:-7701}:8000"
     user: root
     command: >
       /bin/sh -c "pip install -q /app/jarvis-log-client /app/jarvis-settings-client && su appuser -c 'alembic upgrade head && uvicorn jarvis_auth.app.main:app --host 0.0.0.0 --port 8000'"

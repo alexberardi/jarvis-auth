@@ -8,7 +8,7 @@ services:
     extra_hosts:
       - "${DOCKER_HOST_ALIAS:-host.docker.internal}:host-gateway"
     ports:
-      - "${JARVIS_AUTH_PORT:-8007}:8000"
+      - "${JARVIS_AUTH_PORT:-7701}:8000"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

@@ -33,39 +33,39 @@ POSTGRES_DB=jarvis_auth_db
 ```bash
 docker-compose up --build
 ```
-API available at http://localhost:8007 (Swagger at http://localhost:8007/docs). Alembic migrations run automatically before startup.
+API available at http://localhost:7701 (Swagger at http://localhost:7701/docs). Alembic migrations run automatically before startup.
 
 ## API Examples
 - Register:
 ```bash
-curl -X POST http://localhost:8007/auth/register \
+curl -X POST http://localhost:7701/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","username":"user1","password":"password123"}'
 ```
 
 - Login:
 ```bash
-curl -X POST http://localhost:8007/auth/login \
+curl -X POST http://localhost:7701/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"password123"}'
 ```
 
 - Me:
 ```bash
-curl http://localhost:8007/auth/me \
+curl http://localhost:7701/auth/me \
   -H "Authorization: Bearer <access_token>"
 ```
 
 - Refresh:
 ```bash
-curl -X POST http://localhost:8007/auth/refresh \
+curl -X POST http://localhost:7701/auth/refresh \
   -H "Content-Type: application/json" \
   -d '{"refresh_token":"<refresh_token>"}'
 ```
 
 - Logout (revokes refresh token):
 ```bash
-curl -X POST http://localhost:8007/auth/logout \
+curl -X POST http://localhost:7701/auth/logout \
   -H "Content-Type: application/json" \
   -d '{"refresh_token":"<refresh_token>"}'
 ```
