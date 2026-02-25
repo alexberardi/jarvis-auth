@@ -34,3 +34,6 @@ jobs:
 
     - name: Run tests
       run: poetry run pytest -v --tb=short
+
+    - name: Check test coverage
+      run: poetry run pytest --cov=jarvis_auth --cov-report=term-missing --cov-fail-under=80
