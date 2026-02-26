@@ -32,8 +32,5 @@ jobs:
         pip install poetry
         poetry install
 
-    - name: Run tests
-      run: poetry run pytest -v --tb=short
-
-    - name: Check test coverage
-      run: poetry run pytest --cov=jarvis_auth --cov-report=term-missing --cov-fail-under=80
+    - name: Run tests with coverage
+      run: poetry run pytest -v --tb=short --cov=jarvis_auth --cov-report=term-missing --cov-fail-under=80
