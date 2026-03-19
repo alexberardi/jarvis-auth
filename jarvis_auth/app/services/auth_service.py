@@ -12,6 +12,16 @@ from jarvis_auth.app.schemas import auth as auth_schema
 from jarvis_auth.app.services import user_service
 
 
+def _get_user_household_id(db: Session, user_id: int) -> str | None:
+    """Look up the user's primary (first) household membership."""
+    membership = (
+        db.query(models.HouseholdMembership)
+        .filter(models.HouseholdMembership.user_id == user_id)
+        .first()
+    )
+    return str(membership.household_id) if membership else None
+
+
 def register_user(
     db: Session,
     payload: auth_schema.RegisterRequest,
@@ -108,8 +118,12 @@ def refresh_access_token(db: Session, refresh_token: str) -> Optional[str]:
     if not user or not user.is_active:
         return None
 
+    claims: dict = {"sub": str(user.id), "email": user.email}
+    household_id = _get_user_household_id(db, user.id)
+    if household_id:
+        claims["household_id"] = household_id
     access_token = security.create_access_token(
-        data={"sub": str(user.id), "email": user.email},
+        data=claims,
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes),
     )
     return access_token
