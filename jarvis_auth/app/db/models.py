@@ -124,6 +124,37 @@ class HouseholdMembership(Base):
     user: Mapped[User] = relationship("User")
 
 
+class HouseholdInvite(Base):
+    """An invite code that allows users to join a household."""
+    __tablename__ = "household_invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    household_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("households.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    default_role: Mapped[HouseholdRole] = mapped_column(
+        Enum(HouseholdRole, native_enum=False, length=20),
+        nullable=False,
+        default=HouseholdRole.MEMBER,
+    )
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    household: Mapped[Household] = relationship("Household")
+    created_by: Mapped[User | None] = relationship("User")
+
+
 class NodeRegistration(Base):
     """A node registered to a household."""
     __tablename__ = "node_registrations"

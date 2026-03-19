@@ -10,6 +10,7 @@ from jarvis_auth.app.api import admin_nodes
 from jarvis_auth.app.api import admin_users
 from jarvis_auth.app.api import households
 from jarvis_auth.app.api import internal
+from jarvis_auth.app.api import invites
 from jarvis_auth.app.api.deps import require_settings_auth, require_superuser
 from jarvis_auth.app.core.logging import get_logger, setup_logging
 from jarvis_auth.app.db import base, session as db_session
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_nodes.router, tags=["admin-nodes"])
     app.include_router(admin_users.router, tags=["admin-users"])
     app.include_router(households.router, tags=["households"])
+    app.include_router(invites.router, tags=["invites"])
     app.include_router(internal.router, tags=["internal"])
 
     # Settings router from shared library
