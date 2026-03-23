@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 import secrets
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.api.dependencies.app_auth import require_app_client
@@ -364,4 +365,34 @@ def validate_node_household(
         node_id=node.node_id,
         household_id=node.household_id,
     )
+
+
+# ============================================================
+# User Lookup Endpoints
+# ============================================================
+
+
+@router.get("/internal/users/batch")
+def batch_user_lookup(
+    user_ids: List[int] = Query(..., description="User IDs to look up"),
+    app_client: models.AppClient = Depends(require_app_client),
+    db: Session = Depends(get_db),
+):
+    """Return a mapping of user_id -> username for the given IDs.
+
+    Used by command-center to resolve speaker identities to display names.
+    """
+    if not user_ids:
+        return {"users": {}}
+
+    # Cap at 100 to prevent abuse
+    if len(user_ids) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 100 user IDs per request",
+        )
+
+    users = db.query(models.User).filter(models.User.id.in_(user_ids)).all()
+    user_map = {str(u.id): u.username for u in users}
+    return {"users": user_map}
 

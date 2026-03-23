@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from jarvis_auth.app import schemas
 from jarvis_auth.app.api import deps
+from jarvis_auth.app.api.auth import _build_jwt_claims
 from jarvis_auth.app.core import security
 from jarvis_auth.app.services import auth_service
 
@@ -24,7 +25,7 @@ def register_user(
     user, household_id = auth_service.register_user(db, payload, x_household_id)
 
     # Generate tokens (auto-login on register)
-    access_token = security.create_access_token({"sub": str(user.id), "email": user.email})
+    access_token = security.create_access_token(_build_jwt_claims(db, user))
     refresh_token, refresh_hash, expires_at = auth_service.build_refresh_token()
     auth_service.store_refresh_token(db, user, refresh_hash, expires_at)
 
@@ -46,7 +47,7 @@ def login(payload: schemas.auth.LoginRequest, db: Session = Depends(deps.get_db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    access_token = security.create_access_token({"sub": str(user.id), "email": user.email})
+    access_token = security.create_access_token(_build_jwt_claims(db, user))
     refresh_token, refresh_hash, expires_at = auth_service.build_refresh_token()
     auth_service.store_refresh_token(db, user, refresh_hash, expires_at)
 

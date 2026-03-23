@@ -353,11 +353,11 @@ def remove_member(
     """Remove a member from the household. Requires admin role."""
     _require_membership(db, household_id, current_user.id, HouseholdRole.ADMIN)
 
-    # Prevent self-removal
+    # Prevent self-removal via kick — use the leave endpoint instead
     if user_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot remove yourself from the household",
+            detail="Cannot kick yourself. Use POST /households/{id}/leave instead.",
         )
 
     membership = _get_membership(db, household_id, user_id)
@@ -370,6 +370,83 @@ def remove_member(
     db.delete(membership)
     db.commit()
     return None
+
+
+@router.post(
+    "/households/{household_id}/leave",
+    status_code=status.HTTP_200_OK,
+)
+def leave_household(
+    household_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Leave a household. Cannot leave if it's your only household.
+
+    If you're the last member, the household is deleted (including nodes and invites).
+    If you're the last admin but other members remain, you must promote someone first.
+    """
+    membership = _get_membership(db, household_id, current_user.id)
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not a member of this household",
+        )
+
+    # Guard: cannot leave your only household
+    user_households = db.query(models.HouseholdMembership).filter(
+        models.HouseholdMembership.user_id == current_user.id,
+    ).count()
+
+    if user_households <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot leave your only household. Join or create another household first.",
+        )
+
+    # Check if user is the last admin with other members still present
+    total_members = db.query(models.HouseholdMembership).filter(
+        models.HouseholdMembership.household_id == household_id,
+    ).count()
+
+    if total_members > 1 and membership.role == HouseholdRole.ADMIN:
+        other_admins = db.query(models.HouseholdMembership).filter(
+            models.HouseholdMembership.household_id == household_id,
+            models.HouseholdMembership.user_id != current_user.id,
+            models.HouseholdMembership.role == HouseholdRole.ADMIN,
+        ).count()
+
+        if other_admins == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You're the only admin. Promote another member to admin before leaving.",
+            )
+
+    # Remove membership
+    db.delete(membership)
+    db.flush()
+
+    # If last member, clean up the household entirely
+    remaining = db.query(models.HouseholdMembership).filter(
+        models.HouseholdMembership.household_id == household_id,
+    ).count()
+
+    household_deleted = False
+    if remaining == 0:
+        household = db.query(models.Household).filter(
+            models.Household.id == household_id,
+        ).first()
+        if household:
+            db.delete(household)  # Cascade deletes nodes, invites
+            household_deleted = True
+
+    db.commit()
+
+    return {
+        "left": True,
+        "household_id": household_id,
+        "household_deleted": household_deleted,
+    }
 
 
 # ============================================================

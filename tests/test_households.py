@@ -445,7 +445,131 @@ class TestMemberRemove:
             headers=auth_headers,
         )
         assert resp.status_code == 400
-        assert "remove yourself" in resp.json()["detail"]
+        assert "kick yourself" in resp.json()["detail"].lower()
+
+
+# ============================================================
+# Leave Household Tests
+# ============================================================
+
+
+class TestLeaveHousehold:
+    def test_leave_success(self, client, auth_headers, second_user, second_user_auth_headers):
+        """User can leave a household if they have another one."""
+        # Create two households for the second user
+        h1 = client.post("/households", json={"name": "Leave H1"}, headers=second_user_auth_headers)
+        h1_id = h1.json()["id"]
+
+        h2 = client.post("/households", json={"name": "Leave H2"}, headers=second_user_auth_headers)
+        h2_id = h2.json()["id"]
+
+        # Leave the first one
+        resp = client.post(f"/households/{h1_id}/leave", headers=second_user_auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["left"] is True
+        assert body["household_deleted"] is True  # Was last member
+
+    def test_cannot_leave_only_household(self, client, db_session):
+        """Cannot leave if it's the user's only household."""
+        from jarvis_auth.app.db import models
+        from jarvis_auth.app.core.security import hash_password
+
+        # Create fresh user with exactly one household
+        user = models.User(
+            email="solo@example.com", username="solouser",
+            password_hash=hash_password("password123"), is_active=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+
+        login = client.post("/auth/login", json={"email": "solo@example.com", "password": "password123"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        h = client.post("/households", json={"name": "Solo House"}, headers=headers)
+        h_id = h.json()["id"]
+
+        resp = client.post(f"/households/{h_id}/leave", headers=headers)
+        assert resp.status_code == 400
+        assert "only household" in resp.json()["detail"].lower()
+
+    def test_last_admin_cannot_leave_with_members(self, client, auth_headers, second_user, second_user_auth_headers):
+        """Last admin can't leave if other members still present."""
+        # Admin creates household
+        h = client.post("/households", json={"name": "Admin Leave Test"}, headers=auth_headers)
+        h_id = h.json()["id"]
+
+        # Add second user as member (not admin)
+        client.post(
+            f"/households/{h_id}/members",
+            json={"user_id": second_user.id, "role": "member"},
+            headers=auth_headers,
+        )
+
+        # Admin needs a second household to satisfy the "only household" check
+        client.post("/households", json={"name": "Admin Other House"}, headers=auth_headers)
+
+        # Try to leave — should fail (last admin, members still present)
+        resp = client.post(f"/households/{h_id}/leave", headers=auth_headers)
+        assert resp.status_code == 400
+        assert "only admin" in resp.json()["detail"].lower()
+
+    def test_admin_can_leave_if_another_admin_exists(self, client, auth_headers, second_user, second_user_auth_headers, test_user):
+        """Admin can leave if another admin exists."""
+        h = client.post("/households", json={"name": "Dual Admin"}, headers=auth_headers)
+        h_id = h.json()["id"]
+
+        # Add second user as admin
+        client.post(
+            f"/households/{h_id}/members",
+            json={"user_id": second_user.id, "role": "admin"},
+            headers=auth_headers,
+        )
+
+        # First admin needs a second household
+        client.post("/households", json={"name": "Admin Backup"}, headers=auth_headers)
+
+        # Leave should succeed
+        resp = client.post(f"/households/{h_id}/leave", headers=auth_headers)
+        assert resp.status_code == 200
+        assert resp.json()["left"] is True
+        assert resp.json()["household_deleted"] is False  # Second admin + member remain
+
+    def test_last_member_deletes_household(self, client, db_session):
+        """Leaving as the last member deletes the household."""
+        from jarvis_auth.app.db import models
+        from jarvis_auth.app.core.security import hash_password
+
+        user = models.User(
+            email="lastmember@example.com", username="lastmember",
+            password_hash=hash_password("password123"), is_active=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+
+        login = client.post("/auth/login", json={"email": "lastmember@example.com", "password": "password123"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        # Create two households
+        h1 = client.post("/households", json={"name": "Doomed House"}, headers=headers)
+        h1_id = h1.json()["id"]
+        h2 = client.post("/households", json={"name": "Keeper House"}, headers=headers)
+
+        # Leave the first one
+        resp = client.post(f"/households/{h1_id}/leave", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["household_deleted"] is True
+
+        # Verify household is gone
+        get_resp = client.get(f"/households/{h1_id}", headers=headers)
+        assert get_resp.status_code == 403  # Not a member (deleted)
+
+    def test_not_a_member(self, client, auth_headers):
+        """Leaving a household you're not in returns 404."""
+        resp = client.post("/households/fake-household-id/leave", headers=auth_headers)
+        assert resp.status_code == 404
 
 
 # ============================================================

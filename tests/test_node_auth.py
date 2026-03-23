@@ -557,3 +557,56 @@ class TestInternalServiceAccess:
             headers=_app_headers(app_client_creds),
         )
         assert resp.status_code == 204
+
+
+class TestBatchUserLookup:
+    def test_batch_lookup_returns_username(self, client, test_user, app_client_creds):
+        resp = client.get(
+            "/internal/users/batch",
+            params={"user_ids": [test_user.id]},
+            headers=_app_headers(app_client_creds),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert str(test_user.id) in body["users"]
+        assert body["users"][str(test_user.id)] == "testuser"
+
+    def test_batch_lookup_missing_user(self, client, app_client_creds):
+        resp = client.get(
+            "/internal/users/batch",
+            params={"user_ids": [99999]},
+            headers=_app_headers(app_client_creds),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["users"] == {}
+
+    def test_batch_lookup_multiple_users(self, client, test_user, app_client_creds, db_session):
+        from jarvis_auth.app.db import models
+        from jarvis_auth.app.core.security import hash_password
+
+        user2 = models.User(
+            email="user2@example.com",
+            username="user2",
+            password_hash=hash_password("password123"),
+            is_active=True,
+        )
+        db_session.add(user2)
+        db_session.commit()
+        db_session.refresh(user2)
+
+        resp = client.get(
+            "/internal/users/batch",
+            params={"user_ids": [test_user.id, user2.id]},
+            headers=_app_headers(app_client_creds),
+        )
+        assert resp.status_code == 200
+        users = resp.json()["users"]
+        assert users[str(test_user.id)] == "testuser"
+        assert users[str(user2.id)] == "user2"
+
+    def test_batch_lookup_requires_app_auth(self, client):
+        resp = client.get(
+            "/internal/users/batch",
+            params={"user_ids": [1]},
+        )
+        assert resp.status_code == 401
