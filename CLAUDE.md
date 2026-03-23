@@ -65,6 +65,14 @@ jarvis_auth/app/
 **Internal:**
 - `POST /internal/validate-app` → Validate app credentials
 
+**Households:**
+- `POST /households` → Create household
+- `GET /households` → List user's households
+- `POST /households/{id}/leave` → Leave household (guards: only-household, last-admin, cleanup)
+- `DELETE /households/{id}/members/{user_id}` → Kick member (admin only)
+- `POST /households/join` → Join via invite code
+- `POST /auth/switch-household` → Switch active household
+
 ## App-to-App Authentication
 
 Other services authenticate via headers:
