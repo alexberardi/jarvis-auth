@@ -738,8 +738,8 @@ dev = ["pytest (>=7.0.0)", "pytest-asyncio (>=0.21.0)", "pytest-cov (>=4.1.0)"]
 [package.source]
 type = "git"
 url = "https://github.com/alexberardi/jarvis-log-client.git"
-reference = "46aa757"
-resolved_reference = "46aa7576eae2f452993f5fa662db8859a2aa39c1"
+reference = "1881043"
+resolved_reference = "1881043fe27aeb50b8f41fda3e2c6cfac9f39a7b"
 
 [[package]]
 name = "jarvis-settings-client"
@@ -1866,4 +1866,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "1bd915489178d9c5e75a0ab46c882683921d06bb869b6593554bf42edd77ed9d"
+content-hash = "fe46f325ca13515df2d9fb7711d23286edff58fc482b62973983b86ca2ba4c95"
