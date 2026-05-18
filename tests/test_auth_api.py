@@ -12,6 +12,7 @@ os.environ["AUTH_SECRET_KEY"] = "test-secret"
 os.environ["AUTH_ALGORITHM"] = "HS256"
 os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
 os.environ["REFRESH_TOKEN_EXPIRE_DAYS"] = "14"
+os.environ["REFRESH_TOKEN_GRACE_SECONDS"] = "10"
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["JARVIS_AUTH_ADMIN_TOKEN"] = "admin-test-token"
 
@@ -220,4 +221,321 @@ def test_cors_headers_present(client):
         },
     )
     assert resp.headers.get("access-control-allow-origin") is not None
+
+
+# ---------------------------------------------------------------------------
+# Refresh-token rotation + reuse detection (jarvis-roadmap#5)
+# ---------------------------------------------------------------------------
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+from jarvis_auth.app.db import models
+
+
+def _refresh_token_row(db, plain):
+    return (
+        db.query(models.RefreshToken)
+        .filter_by(token_hash=security.hash_refresh_token(plain))
+        .one()
+    )
+
+
+def _register(client, email):
+    resp = client.post("/auth/register", json={"email": email, "password": "password123"})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+# Happy path -----------------------------------------------------------------
+
+
+def test_refresh_rotates_returns_new_refresh_token(client):
+    tokens = _register(client, "rot_happy1@example.com")
+    r1 = tokens["refresh_token"]
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["refresh_token"]
+    assert data["refresh_token"] != r1
+    assert data["access_token"]
+    payload = security.decode_token(data["access_token"])
+    assert payload["sub"]
+    assert "exp" in payload
+
+
+def test_refresh_marks_old_rotated_and_chains_new(client, db_session):
+    tokens = _register(client, "rot_chain@example.com")
+    r1 = tokens["refresh_token"]
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 200
+    r2 = resp.json()["refresh_token"]
+
+    old = _refresh_token_row(db_session, r1)
+    new = _refresh_token_row(db_session, r2)
+    assert old.rotated_at is not None
+    assert old.revoked is False
+    assert new.parent_id == old.id
+    assert new.family_id == old.family_id
+    assert new.rotated_at is None
+    assert new.revoked is False
+
+
+def test_register_creates_root_token_with_family_id_and_null_parent(client, db_session):
+    tokens = _register(client, "rot_root_reg@example.com")
+    row = _refresh_token_row(db_session, tokens["refresh_token"])
+    assert row.family_id
+    assert row.parent_id is None
+    assert row.rotated_at is None
+
+
+def test_login_creates_root_token_with_family_id_and_null_parent(client, db_session):
+    email = "rot_root_login@example.com"
+    reg = _register(client, email)
+    reg_row = _refresh_token_row(db_session, reg["refresh_token"])
+
+    resp = client.post("/auth/login", json={"email": email, "password": "password123"})
+    assert resp.status_code == 200
+    login_row = _refresh_token_row(db_session, resp.json()["refresh_token"])
+    assert login_row.parent_id is None
+    assert login_row.rotated_at is None
+    assert login_row.family_id != reg_row.family_id
+
+
+def test_multiple_rotations_keep_same_family_id(client, db_session):
+    tokens = _register(client, "rot_multi@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+    r3 = client.post("/auth/refresh", json={"refresh_token": r2}).json()["refresh_token"]
+
+    row1 = _refresh_token_row(db_session, r1)
+    row2 = _refresh_token_row(db_session, r2)
+    row3 = _refresh_token_row(db_session, r3)
+    assert row1.family_id == row2.family_id == row3.family_id
+    assert row1.parent_id is None
+    assert row2.parent_id == row1.id
+    assert row3.parent_id == row2.id
+    assert row1.rotated_at is not None
+    assert row2.rotated_at is not None
+    assert row3.rotated_at is None
+
+
+# Edge cases -----------------------------------------------------------------
+
+
+def test_grace_window_returns_cached_successor(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_grace_hit@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 200
+    assert resp.json()["refresh_token"] == r2
+
+    row1 = _refresh_token_row(db_session, r1)
+    family_rows = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert all(not row.revoked for row in family_rows)
+
+
+def test_grace_window_cache_miss_treated_as_reuse(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_grace_miss@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+    refresh_cache.clear()
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    row1 = _refresh_token_row(db_session, r1)
+    db_session.expire_all()
+    family_rows = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert family_rows
+    assert all(row.revoked for row in family_rows)
+
+
+def test_grace_window_expires_then_replay_revokes_family(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_grace_expired@example.com")
+    r1 = tokens["refresh_token"]
+    client.post("/auth/refresh", json={"refresh_token": r1})
+
+    row1 = _refresh_token_row(db_session, r1)
+    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    db_session.commit()
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    db_session.expire_all()
+    family_rows = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert all(row.revoked for row in family_rows)
+
+
+def test_family_revocation_isolated_to_one_session(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+
+    # User A: two separate families (register + login)
+    a_reg = _register(client, "rot_iso_a@example.com")
+    r_a1 = a_reg["refresh_token"]
+    a_login = client.post(
+        "/auth/login", json={"email": "rot_iso_a@example.com", "password": "password123"}
+    )
+    r_a2 = a_login.json()["refresh_token"]
+
+    # User B: independent family
+    b_reg = _register(client, "rot_iso_b@example.com")
+    r_b1 = b_reg["refresh_token"]
+
+    # Force reuse on user A's first family
+    client.post("/auth/refresh", json={"refresh_token": r_a1})
+    row_a1 = _refresh_token_row(db_session, r_a1)
+    row_a1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    db_session.commit()
+
+    bad = client.post("/auth/refresh", json={"refresh_token": r_a1})
+    assert bad.status_code == 401
+
+    db_session.expire_all()
+    fam_a1 = db_session.query(models.RefreshToken).filter_by(family_id=row_a1.family_id).all()
+    assert all(row.revoked for row in fam_a1)
+
+    # Family A2 still rotates fine
+    a2_resp = client.post("/auth/refresh", json={"refresh_token": r_a2})
+    assert a2_resp.status_code == 200
+
+    # User B's family still rotates fine
+    b_resp = client.post("/auth/refresh", json={"refresh_token": r_b1})
+    assert b_resp.status_code == 200
+
+
+# Error / exception flows ----------------------------------------------------
+
+
+def test_refresh_with_unknown_token_returns_401(client, db_session):
+    before = db_session.query(models.RefreshToken).count()
+    resp = client.post("/auth/refresh", json={"refresh_token": "totally-not-a-real-token-xyz"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid refresh token"
+    db_session.expire_all()
+    after = db_session.query(models.RefreshToken).count()
+    assert before == after
+
+
+def test_refresh_with_expired_token_returns_401_and_does_not_revoke_family(client, db_session):
+    tokens = _register(client, "rot_expired@example.com")
+    r1 = tokens["refresh_token"]
+    row = _refresh_token_row(db_session, r1)
+    row.expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+    db_session.commit()
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    db_session.expire_all()
+    fam = db_session.query(models.RefreshToken).filter_by(family_id=row.family_id).all()
+    assert all(not r.revoked for r in fam)
+
+
+def test_refresh_with_revoked_token_returns_401(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_revoked@example.com")
+    r1 = tokens["refresh_token"]
+    row = _refresh_token_row(db_session, r1)
+    row.revoked = True
+    db_session.commit()
+
+    revoked_count_before = (
+        db_session.query(models.RefreshToken).filter_by(family_id=row.family_id, revoked=True).count()
+    )
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    db_session.expire_all()
+    revoked_count_after = (
+        db_session.query(models.RefreshToken).filter_by(family_id=row.family_id, revoked=True).count()
+    )
+    assert revoked_count_before == revoked_count_after
+
+
+def test_reuse_of_rotated_token_revokes_full_family_and_returns_401(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_reuse_chain@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+    r3 = client.post("/auth/refresh", json={"refresh_token": r2}).json()["refresh_token"]
+
+    row1 = _refresh_token_row(db_session, r1)
+    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    db_session.commit()
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    db_session.expire_all()
+    fam = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert len(fam) == 3
+    assert all(row.revoked for row in fam)
+
+
+def test_reuse_emits_structured_warning_log(client, db_session, caplog):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_reuse_log@example.com")
+    r1 = tokens["refresh_token"]
+    client.post("/auth/refresh", json={"refresh_token": r1})
+
+    row1 = _refresh_token_row(db_session, r1)
+    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    user_id = row1.user_id
+    presented_id = row1.id
+    family_id = row1.family_id
+    db_session.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="jarvis_auth.app.api.auth"):
+        resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    matching = [r for r in caplog.records if "refresh_token_reuse_detected" in r.getMessage()]
+    assert len(matching) == 1
+    rec = matching[0]
+    assert getattr(rec, "family_id", None) == family_id
+    assert getattr(rec, "user_id", None) == user_id
+    assert getattr(rec, "presented_token_id", None) == presented_id
+
+
+def test_refresh_after_family_revoked_via_reuse_returns_401_for_legitimate_successor(client, db_session):
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_legit_blocked@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+
+    row1 = _refresh_token_row(db_session, r1)
+    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    db_session.commit()
+
+    # Trigger reuse → blows family
+    bad = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert bad.status_code == 401
+
+    # Legitimate successor is now also dead
+    resp = client.post("/auth/refresh", json={"refresh_token": r2})
+    assert resp.status_code == 401
 
