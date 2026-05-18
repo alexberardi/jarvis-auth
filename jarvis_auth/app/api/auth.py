@@ -1,10 +1,13 @@
+import logging
 from datetime import datetime, timezone
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from jarvis_auth.app.core import security
+from jarvis_auth.app.core import refresh_cache, security
+from jarvis_auth.app.core.settings import settings
 from jarvis_auth.app.db.session import SessionLocal
 from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
@@ -15,6 +18,7 @@ from jarvis_auth.app.api.invites import _get_valid_invite
 from jarvis_auth.app.services.auth_service import _get_user_household_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def get_db():
@@ -54,6 +58,9 @@ def _create_tokens(db: Session, user: models.User) -> tuple[str, str]:
         token_hash=refresh_hash,
         expires_at=expires_at,
         revoked=False,
+        family_id=str(uuid4()),
+        parent_id=None,
+        rotated_at=None,
     )
     db.add(record)
     db.commit()
@@ -170,9 +177,11 @@ def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_
 @router.post("/auth/refresh", response_model=auth_schema.TokenResponse)
 def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(get_db)]):
     refresh_hash = security.hash_refresh_token(payload.refresh_token)
+    # Do NOT pre-filter revoked — we need to inspect rotated_at/revoked to
+    # distinguish reuse from a never-seen token.
     record = (
         db.query(models.RefreshToken)
-        .filter(models.RefreshToken.token_hash == refresh_hash, models.RefreshToken.revoked == False)
+        .filter(models.RefreshToken.token_hash == refresh_hash)
         .first()
     )
     if not record:
@@ -184,11 +193,66 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
+    now = datetime.now(timezone.utc)
+
+    if record.revoked or record.rotated_at is not None:
+        # Grace window: the same parent token was just rotated within the
+        # last `refresh_token_grace_seconds`. Return the successor we already
+        # minted (cached in-process, keyed by the parent token row id).
+        if record.rotated_at is not None:
+            rotated_at = record.rotated_at
+            if rotated_at.tzinfo is None:
+                rotated_at = rotated_at.replace(tzinfo=timezone.utc)
+            if (now - rotated_at).total_seconds() <= settings.refresh_token_grace_seconds:
+                cached_plain = refresh_cache.get(record.id)
+                if cached_plain:
+                    access_token = security.create_access_token(_build_jwt_claims(db, user))
+                    return auth_schema.TokenResponse(
+                        access_token=access_token,
+                        refresh_token=cached_plain,
+                        user=user_schema.UserOut.model_validate(user),
+                    )
+                # Cache miss inside the grace window = process restart after
+                # rotation. Treat as reuse — we can't prove the second
+                # caller is the same client.
+
+        # REUSE DETECTED — revoke the entire family.
+        db.query(models.RefreshToken).filter(
+            models.RefreshToken.family_id == record.family_id
+        ).update({"revoked": True})
+        db.commit()
+        logger.warning(
+            "refresh_token_reuse_detected",
+            extra={
+                "family_id": record.family_id,
+                "user_id": record.user_id,
+                "presented_token_id": record.id,
+            },
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    # Happy path: rotate. Mint successor, chain to parent, mark parent rotated.
+    new_plain, new_hash = security.generate_refresh_token_pair()
+    new_record = models.RefreshToken(
+        user_id=record.user_id,
+        token_hash=new_hash,
+        expires_at=security.refresh_token_expiry(),
+        revoked=False,
+        family_id=record.family_id,
+        parent_id=record.id,
+        rotated_at=None,
+    )
+    db.add(new_record)
+    record.rotated_at = now
+    db.commit()
+    # Key is the parent (just-consumed) token row id, so a retry of the
+    # parent within the grace window finds the cached successor.
+    refresh_cache.set(record.id, new_plain, settings.refresh_token_grace_seconds)
+
     access_token = security.create_access_token(_build_jwt_claims(db, user))
-    # For simplicity, reuse refresh token (rotation optional)
     return auth_schema.TokenResponse(
         access_token=access_token,
-        refresh_token=payload.refresh_token,
+        refresh_token=new_plain,
         user=user_schema.UserOut.model_validate(user),
     )
 

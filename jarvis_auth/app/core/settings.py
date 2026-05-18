@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     auth_algorithm: str = Field("HS256", alias="AUTH_ALGORITHM")
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(14, alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    refresh_token_grace_seconds: int = Field(10, alias="REFRESH_TOKEN_GRACE_SECONDS")
     database_url: str = Field(..., alias="DATABASE_URL")
     admin_token: str = Field(..., alias="JARVIS_AUTH_ADMIN_TOKEN")
 
