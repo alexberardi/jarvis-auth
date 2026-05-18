@@ -539,3 +539,25 @@ def test_refresh_after_family_revoked_via_reuse_returns_401_for_legitimate_succe
     resp = client.post("/auth/refresh", json={"refresh_token": r2})
     assert resp.status_code == 401
 
+
+def test_deleted_refresh_token_helpers_are_gone():
+    from jarvis_auth.app.services import auth_service
+
+    for removed in (
+        "build_refresh_token",
+        "store_refresh_token",
+        "refresh_access_token",
+        "revoke_refresh_token",
+    ):
+        assert not hasattr(auth_service, removed), f"Dead helper {removed!r} reintroduced on auth_service"
+
+    for kept in ("register_user", "authenticate_user", "_get_user_household_id"):
+        assert hasattr(auth_service, kept), f"Live helper {kept!r} unexpectedly missing from auth_service"
+
+
+def test_dead_routes_auth_module_is_removed():
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("jarvis_auth.app.api.routes.auth")
+
