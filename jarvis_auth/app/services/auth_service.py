@@ -1,11 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.core import security
-from jarvis_auth.app.core.config import settings
 from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
 from jarvis_auth.app.schemas import auth as auth_schema
@@ -92,50 +91,4 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[models
     if not user or not security.verify_password(password, user.password_hash):
         return None
     return user
-
-
-def build_refresh_token() -> tuple[str, str, datetime]:
-    refresh_token, refresh_hash = security.generate_refresh_token_pair()
-    expires_at = security.refresh_token_expiry()
-    return refresh_token, refresh_hash, expires_at
-
-
-def store_refresh_token(db: Session, user: models.User, token_hash: str, expires_at: datetime) -> models.RefreshToken:
-    record = models.RefreshToken(user_id=user.id, token_hash=token_hash, expires_at=expires_at, revoked=False)
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return record
-
-
-def refresh_access_token(db: Session, refresh_token: str) -> Optional[str]:
-    token_hash = security.hash_refresh_token(refresh_token)
-    record = db.query(models.RefreshToken).filter(models.RefreshToken.token_hash == token_hash).first()
-    if not record or record.revoked or record.is_expired:
-        return None
-
-    user = user_service.get_user_by_id(db, record.user_id)
-    if not user or not user.is_active:
-        return None
-
-    claims: dict = {"sub": str(user.id), "email": user.email}
-    household_id = _get_user_household_id(db, user.id)
-    if household_id:
-        claims["household_id"] = household_id
-    access_token = security.create_access_token(
-        data=claims,
-        expires_delta=timedelta(minutes=settings.access_token_expire_minutes),
-    )
-    return access_token
-
-
-def revoke_refresh_token(db: Session, refresh_token: str) -> bool:
-    token_hash = security.hash_refresh_token(refresh_token)
-    record = db.query(models.RefreshToken).filter(models.RefreshToken.token_hash == token_hash).first()
-    if not record:
-        return False
-    record.revoked = True
-    db.add(record)
-    db.commit()
-    return True
 
