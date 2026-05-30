@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_HOME="/opt/poetry"
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
-RUN pip install --upgrade pip && pip install "poetry==1.8.3"
+RUN pip install --upgrade pip && pip install "poetry==2.2.1"
 
 COPY pyproject.toml poetry.lock ./
 RUN poetry install --without dev --no-root
