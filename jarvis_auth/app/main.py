@@ -11,6 +11,7 @@ from jarvis_auth.app.api import admin_users
 from jarvis_auth.app.api import households
 from jarvis_auth.app.api import internal
 from jarvis_auth.app.api import invites
+from jarvis_auth.app.api import superuser_views
 from jarvis_auth.app.api.deps import require_settings_auth, require_superuser
 from jarvis_auth.app.core.logging import get_logger, setup_logging
 from jarvis_auth.app.db import base, session as db_session
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(households.router, tags=["households"])
     app.include_router(invites.router, tags=["invites"])
     app.include_router(internal.router, tags=["internal"])
+    app.include_router(superuser_views.router, tags=["superuser"])
 
     # Settings router from shared library
     # Reads: superuser JWT OR app-to-app credentials

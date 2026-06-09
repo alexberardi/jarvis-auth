@@ -317,3 +317,79 @@ class TestUserModelSuperuser:
         db_session.refresh(user)
 
         assert user.is_superuser is True
+
+
+class TestSuperuserViews:
+    """Cross-household read-only endpoints (JWT + is_superuser gated)."""
+
+    def test_households_requires_auth(self, client):
+        resp = client.get("/superuser/households")
+        assert resp.status_code == 401
+
+    def test_households_rejects_regular_user(self, client, regular_user):
+        token = regular_user["access_token"]
+        resp = client.get(
+            "/superuser/households",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+
+    def test_households_returns_all_households_for_superuser(
+        self, client, db_session, superuser
+    ):
+        for name in ["Alpha House", "Beta House", "Gamma House"]:
+            db_session.add(models.Household(name=name))
+        db_session.commit()
+
+        token = superuser["access_token"]
+        resp = client.get(
+            "/superuser/households",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        names = {h["name"] for h in resp.json()}
+        assert {"Alpha House", "Beta House", "Gamma House"}.issubset(names)
+        for item in resp.json():
+            assert {"id", "name", "created_at", "updated_at"}.issubset(item.keys())
+
+    def test_nodes_requires_auth(self, client):
+        resp = client.get("/superuser/nodes")
+        assert resp.status_code == 401
+
+    def test_nodes_rejects_regular_user(self, client, regular_user):
+        token = regular_user["access_token"]
+        resp = client.get(
+            "/superuser/nodes",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+
+    def test_nodes_returns_all_nodes_for_superuser(
+        self, client, db_session, superuser
+    ):
+        household = models.Household(name="Node Test Home")
+        db_session.add(household)
+        db_session.flush()
+
+        for node_id, name in [("node-a", "Kitchen"), ("node-b", "Bedroom")]:
+            db_session.add(
+                models.NodeRegistration(
+                    node_id=node_id,
+                    household_id=household.id,
+                    node_key_hash=security.hash_password("k"),
+                    name=name,
+                    is_active=True,
+                )
+            )
+        db_session.commit()
+
+        token = superuser["access_token"]
+        resp = client.get(
+            "/superuser/nodes",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        returned = {n["node_id"]: n for n in resp.json()}
+        assert "node-a" in returned and returned["node-a"]["name"] == "Kitchen"
+        assert "node-b" in returned and returned["node-b"]["name"] == "Bedroom"
+        assert returned["node-a"]["household_id"] == household.id
