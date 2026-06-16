@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.core import refresh_cache, security
@@ -13,8 +13,9 @@ from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
 from jarvis_auth.app.schemas import auth as auth_schema
 from jarvis_auth.app.schemas import user as user_schema
-from jarvis_auth.app.api.deps import get_current_user
+from jarvis_auth.app.api.deps import get_current_user, oauth2_scheme
 from jarvis_auth.app.api.invites import _get_valid_invite
+from jarvis_auth.app.services import account_deletion
 from jarvis_auth.app.services.auth_service import _get_user_household_id
 
 router = APIRouter()
@@ -260,6 +261,32 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
 @router.get("/auth/me", response_model=user_schema.UserOut)
 def me(current_user: models.User = Depends(get_current_user)):
     return user_schema.UserOut.model_validate(current_user)
+
+
+@router.delete("/auth/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_me(
+    payload: auth_schema.AccountDeleteRequest,
+    current_user: models.User = Depends(get_current_user),
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Delete the current user's account and purge downstream user data.
+
+    Guards (nodes / household-admin) and the downstream purge fan-out run BEFORE
+    any local deletion, so a failure leaves the account fully intact. The user's
+    raw Bearer token is forwarded to downstream services for self-scoped purge.
+    """
+    # a. verify password
+    if not security.verify_password(payload.password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect password",
+        )
+
+    # b..h. guards, downstream purge, then local deletion.
+    account_deletion.delete_user_account(db, current_user, token)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/auth/setup-status")

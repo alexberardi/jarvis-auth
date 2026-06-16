@@ -40,7 +40,7 @@ poetry run pytest
 **Upstream (jarvis-auth depends on):**
 - **PostgreSQL** (required) — users, refresh tokens, app clients, nodes, households, invites, settings
 - **jarvis-logs** (optional, port 7702) — centralized logging; falls back to console on failure
-- **jarvis-config-service** (optional, port 7700) — service discovery; not needed because auth doesn't call other services
+- **jarvis-config-service** (optional, port 7700) — service discovery. Auth makes no outbound calls on the hot path, with **one exception**: `DELETE /auth/me` (account deletion) fans out a best-effort user-data purge to `jarvis-command-center` and `jarvis-notifications` (`DELETE /api/v0/me/data`, forwarding the user's Bearer token). Their URLs are resolved from config-service, or via `JARVIS_COMMAND_CENTER_URL` / `JARVIS_NOTIFICATIONS_URL` overrides. The purge is tolerant-blocking: unreachable services are skipped (best effort), but a downstream 5xx aborts the deletion (502) before any local data is touched.
 
 **Downstream (depends on jarvis-auth):**
 - **All services that validate JWTs** — share `AUTH_SECRET_KEY`, validate locally (no network call)

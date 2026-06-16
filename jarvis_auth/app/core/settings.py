@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     database_url: str = Field(..., alias="DATABASE_URL")
     admin_token: str = Field(..., alias="JARVIS_AUTH_ADMIN_TOKEN")
 
+    # Service discovery for outbound best-effort purge calls on account deletion.
+    # Prefer config-service discovery; these env overrides take precedence when set.
+    config_url: str | None = Field(None, alias="JARVIS_CONFIG_URL")
+    command_center_url: str | None = Field(None, alias="JARVIS_COMMAND_CENTER_URL")
+    notifications_url: str | None = Field(None, alias="JARVIS_NOTIFICATIONS_URL")
+
 
 @lru_cache()
 def get_settings() -> Settings:
