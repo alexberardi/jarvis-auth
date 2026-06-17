@@ -20,6 +20,9 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+nvim-tree.lua
+*.swp
+*.swo
 
 # Builds / dist
 build/
