@@ -457,6 +457,41 @@ class TestInternalValidateNode:
         body = resp.json()
         assert body["valid"] is False
 
+    def test_validate_node_authorized_for_jarvis_logs(self, client, test_household, app_client_creds):
+        """Regression: a node granted jarvis-logs must validate for jarvis-logs.
+
+        Pi nodes used to be rejected (403) by jarvis-logs because the node never
+        received a service-access grant for jarvis-logs -- command-center
+        registered nodes with an empty services list, so only the calling
+        service was auto-granted. The fix (backfill migration + granting the
+        node access to the logs service) ensures a node holding a jarvis-logs
+        grant is authorized for jarvis-logs at the validate-node seam.
+        """
+        create_resp = client.post(
+            "/admin/nodes",
+            json={
+                "node_id": "logs-node",
+                "household_id": test_household.id,
+                "name": "Logs Node",
+                "services": ["command-center", "jarvis-logs"],
+            },
+            headers=_admin_headers(),
+        )
+        assert create_resp.status_code == 201
+        node_key = create_resp.json()["node_key"]
+
+        resp = client.post(
+            "/internal/validate-node",
+            json={"node_id": "logs-node", "node_key": node_key, "service_id": "jarvis-logs"},
+            headers=_app_headers(app_client_creds),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # The node is NOT 403'd for jarvis-logs -- it is authorized.
+        assert body["valid"] is True, body.get("reason")
+        assert body["node_id"] == "logs-node"
+        assert body["household_id"] == test_household.id
+
     def test_validate_node_requires_app_auth(self, client):
         resp = client.post(
             "/internal/validate-node",
