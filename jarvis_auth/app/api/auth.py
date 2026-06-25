@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.core import refresh_cache, security
-from jarvis_auth.app.core.settings import settings
 from jarvis_auth.app.db.session import SessionLocal
 from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
@@ -17,6 +16,7 @@ from jarvis_auth.app.api.deps import get_current_user, oauth2_scheme
 from jarvis_auth.app.api.invites import _get_valid_invite
 from jarvis_auth.app.services import account_deletion
 from jarvis_auth.app.services.auth_service import _get_user_household_id
+from jarvis_auth.app.services.settings_service import get_settings_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -196,15 +196,22 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
 
     now = datetime.now(timezone.utc)
 
+    # Resolve the grace window through the settings service (DB-backed, with
+    # env/default fallback) rather than the @lru_cache'd pydantic Settings, so
+    # an admin override takes effect without a service restart (roadmap#44).
+    grace_seconds = get_settings_service().get_int(
+        "auth.token.refresh_grace_seconds", 10
+    )
+
     if record.revoked or record.rotated_at is not None:
         # Grace window: the same parent token was just rotated within the
-        # last `refresh_token_grace_seconds`. Return the successor we already
-        # minted (cached in-process, keyed by the parent token row id).
+        # last `grace_seconds`. Return the successor we already minted
+        # (cached in-process, keyed by the parent token row id).
         if record.rotated_at is not None:
             rotated_at = record.rotated_at
             if rotated_at.tzinfo is None:
                 rotated_at = rotated_at.replace(tzinfo=timezone.utc)
-            if (now - rotated_at).total_seconds() <= settings.refresh_token_grace_seconds:
+            if (now - rotated_at).total_seconds() <= grace_seconds:
                 cached_plain = refresh_cache.get(record.id)
                 if cached_plain:
                     access_token = security.create_access_token(_build_jwt_claims(db, user))
@@ -248,7 +255,7 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
     db.commit()
     # Key is the parent (just-consumed) token row id, so a retry of the
     # parent within the grace window finds the cached successor.
-    refresh_cache.set(record.id, new_plain, settings.refresh_token_grace_seconds)
+    refresh_cache.set(record.id, new_plain, grace_seconds)
 
     access_token = security.create_access_token(_build_jwt_claims(db, user))
     return auth_schema.TokenResponse(
