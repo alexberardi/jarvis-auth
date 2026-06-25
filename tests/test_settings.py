@@ -57,6 +57,18 @@ class TestSettingsDefinitions:
         assert "auth.token.refresh_expire_days" in keys
         assert "auth.algorithm" in keys
 
+    def test_refresh_grace_definition_registered(self):
+        """The new refresh-grace setting is registered with the right shape."""
+        definition = next(
+            (d for d in SETTINGS_DEFINITIONS if d.key == "auth.token.refresh_grace_seconds"),
+            None,
+        )
+        assert definition is not None, "auth.token.refresh_grace_seconds is not registered"
+        assert definition.value_type == "int"
+        assert definition.default == 10
+        assert definition.category == "auth.token"
+        assert definition.env_fallback == "REFRESH_TOKEN_GRACE_SECONDS"
+
 
 class TestSettingsServiceCache:
     """Tests for SettingsService caching behavior."""
@@ -87,6 +99,25 @@ class TestSettingsServiceCache:
         # Should return cached value without DB query
         result = service.get("auth.token.access_expire_minutes")
         assert result == 60
+
+    def test_refresh_grace_db_override_beats_env(self, service):
+        """A DB-backed value overrides the REFRESH_TOKEN_GRACE_SECONDS env fallback."""
+        cache_key = service._make_cache_key("auth.token.refresh_grace_seconds")
+        service._cache[cache_key] = SettingValue(
+            value=42,
+            value_type="int",
+            requires_reload=False,
+            is_secret=False,
+            env_fallback="REFRESH_TOKEN_GRACE_SECONDS",
+            from_db=True,
+            cached_at=time.time(),
+        )
+
+        # Even with a different env value present, the DB-backed value wins.
+        with patch.dict(os.environ, {"REFRESH_TOKEN_GRACE_SECONDS": "10"}):
+            result = service.get_int("auth.token.refresh_grace_seconds", 0)
+        assert result == 42
+        assert isinstance(result, int)
 
     def test_cache_expiry(self, service):
         """Test that expired cache entries are not used."""
@@ -162,6 +193,19 @@ class TestSettingsServiceEnvFallback:
             result = service.get("auth.token.access_expire_minutes")
             # Should return definition default (30)
             assert result == 30
+
+    def test_refresh_grace_env_fallback(self, service):
+        """REFRESH_TOKEN_GRACE_SECONDS seeds the value when no DB row exists."""
+        with patch.dict(os.environ, {"REFRESH_TOKEN_GRACE_SECONDS": "25"}):
+            result = service.get_int("auth.token.refresh_grace_seconds", 0)
+        assert result == 25
+        assert isinstance(result, int)
+
+    def test_refresh_grace_default_when_no_env(self, service):
+        """The definition default (10) is used when the env var is cleared."""
+        with patch.dict(os.environ, {}, clear=True):
+            result = service.get("auth.token.refresh_grace_seconds")
+        assert result == 10
 
     def test_unknown_key_returns_none(self, service):
         """Test that unknown keys return None."""
@@ -358,6 +402,18 @@ class TestSettingsRoutes:
         assert data["key"] == "auth.token.access_expire_minutes"
         assert "value" in data
         assert "value_type" in data
+
+    def test_refresh_grace_surfaces_in_settings_route(self, client):
+        """The refresh-grace setting round-trips through GET /settings/<key>.
+
+        This is the admin round-trip surface — admin renders whatever
+        /settings/ reports, so this proves the setting is discoverable.
+        """
+        response = client.get("/settings/auth.token.refresh_grace_seconds")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["key"] == "auth.token.refresh_grace_seconds"
+        assert data["value_type"] == "int"
 
     def test_get_nonexistent_setting(self, client):
         """Test getting a nonexistent setting returns 404."""

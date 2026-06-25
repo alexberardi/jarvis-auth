@@ -561,3 +561,74 @@ def test_dead_routes_auth_module_is_removed():
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("jarvis_auth.app.api.routes.auth")
 
+
+# ---------------------------------------------------------------------------
+# Path (a): refresh-grace window is live DB-tunable (jarvis-roadmap#44)
+# ---------------------------------------------------------------------------
+
+
+def test_rotation_grace_read_through_settings_service(client, db_session):
+    """The refresh-rotation read path resolves the grace window through
+    get_settings_service(), NOT the @lru_cache'd pydantic Settings — so a DB
+    override takes effect without a service restart.
+
+    The env/pydantic window is fixed at 10s (set at module import). We patch the
+    settings service the rotation code consults to report a much larger window
+    (999s) and replay a token rotated 120s ago: under the frozen 10s cache that
+    replay is reuse (401 + family revocation); if the value is sourced from the
+    settings service it is a benign retry (200, cached successor, no
+    revocation). The differing outcome proves the value came from the service
+    and not core/settings.py.
+    """
+    from unittest.mock import MagicMock, patch
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+
+    live_service = MagicMock()
+    live_service.get_int.return_value = 999
+
+    with patch("jarvis_auth.app.api.auth.get_settings_service", return_value=live_service):
+        tokens = _register(client, "rot_grace_live@example.com")
+        r1 = tokens["refresh_token"]
+        r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+
+        # Move the parent's rotation 120s into the past — far outside the 10s
+        # env/pydantic window, but well inside the 999s the service reports.
+        row1 = _refresh_token_row(db_session, r1)
+        row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+        db_session.commit()
+
+        resp = client.post("/auth/refresh", json={"refresh_token": r1})
+
+    assert resp.status_code == 200
+    assert resp.json()["refresh_token"] == r2
+    # The rotation code actually consulted the settings service for the window.
+    live_service.get_int.assert_any_call("auth.token.refresh_grace_seconds", 10)
+
+    db_session.expire_all()
+    fam = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert all(not row.revoked for row in fam)
+
+    # Inverse: a tight service-reported window treats the same lag as theft,
+    # confirming the comparison is driven by the service value (not the cache).
+    refresh_cache.clear()
+    tight_service = MagicMock()
+    tight_service.get_int.return_value = 1
+
+    with patch("jarvis_auth.app.api.auth.get_settings_service", return_value=tight_service):
+        tokens_b = _register(client, "rot_grace_tight@example.com")
+        r1b = tokens_b["refresh_token"]
+        client.post("/auth/refresh", json={"refresh_token": r1b})
+
+        row1b = _refresh_token_row(db_session, r1b)
+        row1b.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+        db_session.commit()
+
+        resp_b = client.post("/auth/refresh", json={"refresh_token": r1b})
+
+    assert resp_b.status_code == 401
+    db_session.expire_all()
+    fam_b = db_session.query(models.RefreshToken).filter_by(family_id=row1b.family_id).all()
+    assert all(row.revoked for row in fam_b)
+
