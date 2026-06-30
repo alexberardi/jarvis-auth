@@ -73,6 +73,9 @@ def client(db_session):
     from jarvis_auth.app.api import auth as auth_router
     from jarvis_auth.app.api import deps
     from jarvis_auth.app.api.dependencies import app_auth
+    from jarvis_auth.app.services import settings_service as settings_service_module
+    from jarvis_auth.app.db.models import Setting
+    from jarvis_settings_client import SettingsService
 
     def override_get_db():
         try:
@@ -84,9 +87,35 @@ def client(db_session):
     app.dependency_overrides[deps.get_db] = override_get_db
     app.dependency_overrides[app_auth.get_db] = override_get_db
 
+    # The settings service opens its own session via SessionLocal() and closes
+    # it after every read. Under the StaticPool single-connection test setup,
+    # that close() issues a ROLLBACK on the *shared* connection, discarding the
+    # request's pending writes (e.g. refresh-token rotation) and raising
+    # StaleDataError. Bind the global service to the test session with a no-op
+    # close so its reads share the request transaction instead of tearing it
+    # down. In production each session gets its own pooled connection, so this
+    # only matters for the test harness.
+    class _NonClosingSession:
+        def __init__(self, session):
+            self._session = session
+
+        def close(self):  # don't roll back the shared test transaction
+            pass
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+    saved_settings_service = settings_service_module._settings_service
+    settings_service_module._settings_service = SettingsService(
+        definitions=settings_service_module.SETTINGS_DEFINITIONS,
+        get_db_session=lambda: _NonClosingSession(db_session),
+        setting_model=Setting,
+    )
+
     yield TestClient(app)
 
     app.dependency_overrides.clear()
+    settings_service_module._settings_service = saved_settings_service
 
 
 @pytest.fixture()
