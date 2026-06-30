@@ -77,7 +77,7 @@ JWT claims always include: `sub` (user_id), `email`, `is_superuser`, `household_
 
 **Token lifecycle:**
 - Access token: 30 min (configurable via `ACCESS_TOKEN_EXPIRE_MINUTES`)
-- Refresh token: 14 days (configurable via `REFRESH_TOKEN_EXPIRE_DAYS`). Stored hashed in DB. **Not rotated on `/auth/refresh`** — same refresh token reused until expiry. See Invariants for the implications.
+- Refresh token: 14 days (configurable via `REFRESH_TOKEN_EXPIRE_DAYS`). Stored hashed in DB. **Rotated on `/auth/refresh`** — each refresh mints a new refresh token, chained to its parent by `family_id`/`parent_id`, with a short in-process grace window (`REFRESH_TOKEN_GRACE_SECONDS`, default 10s) so a benign double-submit re-gets the cached successor. Replaying an already-rotated token is rejected (401); it revokes the whole family **only** if `REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE=true` (default off — see Invariants). Clients MUST persist and use the newly returned refresh token.
 
 ### 3. App-to-app authentication (the most common path)
 
@@ -155,7 +155,7 @@ Don't round-trip. Each service reads `AUTH_SECRET_KEY` from env and decodes the 
 
 1. **`api/routes/*` is dead code.** A partial refactor introduced `api/routes/auth.py`, `api/routes/users.py`, and `api/routes/__init__.py` — but `main.py` does NOT wire these up. The active routers are in `api/auth.py`, `api/internal.py`, `api/admin_*.py`, `api/households.py`, `api/invites.py`. **Add new routes to `api/*.py`, not `api/routes/*.py`.** This dead code path is also where the only `/auth/logout` definition exists — the running service has no working logout endpoint. Clients should discard tokens locally; the refresh token will expire on its own.
 2. **Env var is `AUTH_SECRET_KEY`, not `SECRET_KEY`.** Older docs (and the meta CLAUDE.md) say `SECRET_KEY` — this is wrong for jarvis-auth itself. All other services share the same secret under `SECRET_KEY` for JWT validation; here it's read as `AUTH_SECRET_KEY` via Pydantic alias.
-3. **Refresh tokens are not rotated.** `/auth/refresh` returns the same refresh token. A stolen refresh token stays valid until its 14-day expiry. Acceptable trade-off for the household-scale beta; a hardening item for v1. Don't write client code that assumes rotation.
+3. **Refresh tokens ARE rotated** (since 2026-05, migration `a3b4c5d6e7f8`). `/auth/refresh` mints a new refresh token each call and marks the parent `rotated_at`; tokens are chained into a `family_id`. A `REFRESH_TOKEN_GRACE_SECONDS` (default 10s) in-process cache (`core/refresh_cache.py`) lets a benign double-submit of the just-rotated parent re-get the cached successor instead of failing. **Client code MUST adopt and persist the returned refresh token** — replaying a rotated one 401s. By default a stale replay does NOT revoke the family (a flaky-network mobile client replays far more often than tokens are stolen, and the in-process cache is lost on every restart → a restart-during-grace would otherwise nuke live sessions); set `REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE=true` to restore strict whole-family revocation. The grace cache is in-process only — auth must stay single-worker until it's backed by Redis/Postgres.
 4. **JWT validation is local-only — revocation is eventually consistent.** Even after marking a user inactive or deleting them, their unexpired access token (≤30 min) still works in downstream services. If you need stricter revocation, shorten `ACCESS_TOKEN_EXPIRE_MINUTES`. There is **no** `/internal/validate-jwt` endpoint and adding one would invert the design.
 5. **`JARVIS_AUTH_ADMIN_TOKEN` is special.** It's the master key for `/admin/*` endpoints. It's *only* used by trusted infrastructure (installer, config-service first-boot). Do not pass it from user-facing code or non-bootstrap contexts.
 6. **`/auth/setup` is one-shot.** Once any superuser exists, it returns 409. There is no other supported path to create the first superuser. Treat as installer-only.
@@ -191,7 +191,7 @@ All timestamps timezone-aware UTC. Models in `jarvis_auth/app/db/models.py`.
 |---|---|---|
 | POST | `/auth/register` | Auto-login. Optional `invite_code` body field or `X-Household-Id` header. Otherwise creates "My Home" household, user becomes admin. |
 | POST | `/auth/login` | Email + password → tokens |
-| POST | `/auth/refresh` | Refresh token in body → new access token. Same refresh token returned. |
+| POST | `/auth/refresh` | Refresh token in body → new access token **+ a newly rotated refresh token** (client must adopt it). 10s grace re-serves the successor on a benign double-submit. |
 | GET | `/auth/me` | Requires Bearer JWT |
 | GET | `/auth/setup-status` | Public: `{needs_setup: bool}` |
 | POST | `/auth/setup` | One-shot: creates first superuser. 409 if already done. |
