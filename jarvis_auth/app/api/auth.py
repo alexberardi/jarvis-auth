@@ -214,22 +214,34 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
                         user=user_schema.UserOut.model_validate(user),
                     )
                 # Cache miss inside the grace window = process restart after
-                # rotation. Treat as reuse — we can't prove the second
-                # caller is the same client.
+                # rotation (the in-process cache is volatile). We can't serve
+                # the successor, but this is far more likely a benign replay
+                # than theft — fall through to a plain 401 WITHOUT nuking the
+                # family below.
 
-        # REUSE DETECTED — revoke the entire family.
-        db.query(models.RefreshToken).filter(
-            models.RefreshToken.family_id == record.family_id
-        ).update({"revoked": True})
-        db.commit()
+        # Stale replay of an already-rotated (or revoked) token. Reject THIS
+        # request, but by default do NOT revoke the family: the live tail of
+        # the chain is the token the client is actually using, and a mobile
+        # client over a flaky cloud link legitimately replays a just-rotated
+        # token (two refresh paths, a lost response, or an auth restart that
+        # wiped the grace cache) far more often than a token is truly stolen.
+        # Revoking the family here is what turned a harmless replay into a full
+        # sign-out of an active 14-day session. Opt back into strict
+        # theft-detection with REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE=true.
         logger.warning(
             "refresh_token_reuse_detected",
             extra={
                 "family_id": record.family_id,
                 "user_id": record.user_id,
                 "presented_token_id": record.id,
+                "revoked_family": settings.refresh_token_revoke_family_on_reuse,
             },
         )
+        if settings.refresh_token_revoke_family_on_reuse:
+            db.query(models.RefreshToken).filter(
+                models.RefreshToken.family_id == record.family_id
+            ).update({"revoked": True})
+            db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
     # Happy path: rotate. Mint successor, chain to parent, mark parent rotated.

@@ -340,13 +340,97 @@ def test_grace_window_returns_cached_successor(client, db_session):
     assert all(not row.revoked for row in family_rows)
 
 
-def test_grace_window_cache_miss_treated_as_reuse(client, db_session):
+def test_grace_window_cache_miss_does_not_revoke_family(client, db_session):
+    """A grace-window cache miss (== auth restart wiped the in-process cache)
+    must reject the stale token but NOT revoke the family — the live successor
+    stays usable so the session survives a deploy/restart."""
     from jarvis_auth.app.core import refresh_cache
 
     refresh_cache.clear()
     tokens = _register(client, "rot_grace_miss@example.com")
     r1 = tokens["refresh_token"]
     r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+    refresh_cache.clear()  # simulate process restart inside the grace window
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    row1 = _refresh_token_row(db_session, r1)
+    db_session.expire_all()
+    family_rows = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert family_rows
+    assert not any(row.revoked for row in family_rows)
+
+    # The live successor still refreshes — the session was not killed.
+    survive = client.post("/auth/refresh", json={"refresh_token": r2})
+    assert survive.status_code == 200
+
+
+def test_grace_window_expires_then_replay_does_not_revoke_family(client, db_session):
+    """Replaying a long-rotated token past the grace window is rejected but,
+    by default, does not revoke the family (the live tail survives)."""
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_grace_expired@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+
+    row1 = _refresh_token_row(db_session, r1)
+    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    db_session.commit()
+
+    resp = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert resp.status_code == 401
+
+    db_session.expire_all()
+    family_rows = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
+    assert not any(row.revoked for row in family_rows)
+
+    # Live successor still works.
+    survive = client.post("/auth/refresh", json={"refresh_token": r2})
+    assert survive.status_code == 200
+
+
+def test_stale_replay_keeps_live_session_alive(client, db_session):
+    """Regression for the mobile auth-drop bug: a client whose background timer
+    replays an already-rotated token must NOT lose the session held on its
+    live token. Replay r1 after advancing to r2; r2 must still rotate to r3."""
+    from jarvis_auth.app.core import refresh_cache
+
+    refresh_cache.clear()
+    tokens = _register(client, "rot_stale_replay@example.com")
+    r1 = tokens["refresh_token"]
+    r2 = client.post("/auth/refresh", json={"refresh_token": r1}).json()["refresh_token"]
+
+    # Force r1 well past the grace window, then replay it (the stale path).
+    row1 = _refresh_token_row(db_session, r1)
+    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    db_session.commit()
+    stale = client.post("/auth/refresh", json={"refresh_token": r1})
+    assert stale.status_code == 401
+
+    # The live token the client actually holds keeps working.
+    r3 = client.post("/auth/refresh", json={"refresh_token": r2})
+    assert r3.status_code == 200
+    assert r3.json()["refresh_token"] != r2
+
+
+def test_revoke_family_on_reuse_when_explicitly_enabled(client, db_session, monkeypatch):
+    """Opt-in strict theft-detection: with the flag on, a grace cache miss
+    revokes the whole family (the pre-2026-06 behavior, now off by default)."""
+    from jarvis_auth.app.core import refresh_cache
+    # Patch the settings object auth.py actually holds: the test module reloads
+    # the settings module (line ~21), so a fresh `from core.settings import
+    # settings` can diverge from auth.py's import-bound reference. Target the
+    # attribute through the auth module to stay in sync regardless of order.
+    monkeypatch.setattr(
+        "jarvis_auth.app.api.auth.settings.refresh_token_revoke_family_on_reuse", True
+    )
+    refresh_cache.clear()
+    tokens = _register(client, "rot_strict@example.com")
+    r1 = tokens["refresh_token"]
+    client.post("/auth/refresh", json={"refresh_token": r1})
     refresh_cache.clear()
 
     resp = client.post("/auth/refresh", json={"refresh_token": r1})
@@ -359,29 +443,15 @@ def test_grace_window_cache_miss_treated_as_reuse(client, db_session):
     assert all(row.revoked for row in family_rows)
 
 
-def test_grace_window_expires_then_replay_revokes_family(client, db_session):
+def test_family_revocation_isolated_to_one_session(client, db_session, monkeypatch):
     from jarvis_auth.app.core import refresh_cache
-
-    refresh_cache.clear()
-    tokens = _register(client, "rot_grace_expired@example.com")
-    r1 = tokens["refresh_token"]
-    client.post("/auth/refresh", json={"refresh_token": r1})
-
-    row1 = _refresh_token_row(db_session, r1)
-    row1.rotated_at = datetime.now(timezone.utc) - timedelta(seconds=120)
-    db_session.commit()
-
-    resp = client.post("/auth/refresh", json={"refresh_token": r1})
-    assert resp.status_code == 401
-
-    db_session.expire_all()
-    family_rows = db_session.query(models.RefreshToken).filter_by(family_id=row1.family_id).all()
-    assert all(row.revoked for row in family_rows)
-
-
-def test_family_revocation_isolated_to_one_session(client, db_session):
-    from jarvis_auth.app.core import refresh_cache
-
+    # Patch the settings object auth.py actually holds: the test module reloads
+    # the settings module (line ~21), so a fresh `from core.settings import
+    # settings` can diverge from auth.py's import-bound reference. Target the
+    # attribute through the auth module to stay in sync regardless of order.
+    monkeypatch.setattr(
+        "jarvis_auth.app.api.auth.settings.refresh_token_revoke_family_on_reuse", True
+    )
     refresh_cache.clear()
 
     # User A: two separate families (register + login)
@@ -469,9 +539,15 @@ def test_refresh_with_revoked_token_returns_401(client, db_session):
     assert revoked_count_before == revoked_count_after
 
 
-def test_reuse_of_rotated_token_revokes_full_family_and_returns_401(client, db_session):
+def test_reuse_of_rotated_token_revokes_full_family_and_returns_401(client, db_session, monkeypatch):
     from jarvis_auth.app.core import refresh_cache
-
+    # Patch the settings object auth.py actually holds: the test module reloads
+    # the settings module (line ~21), so a fresh `from core.settings import
+    # settings` can diverge from auth.py's import-bound reference. Target the
+    # attribute through the auth module to stay in sync regardless of order.
+    monkeypatch.setattr(
+        "jarvis_auth.app.api.auth.settings.refresh_token_revoke_family_on_reuse", True
+    )
     refresh_cache.clear()
     tokens = _register(client, "rot_reuse_chain@example.com")
     r1 = tokens["refresh_token"]
@@ -519,9 +595,20 @@ def test_reuse_emits_structured_warning_log(client, db_session, caplog):
     assert getattr(rec, "presented_token_id", None) == presented_id
 
 
-def test_refresh_after_family_revoked_via_reuse_returns_401_for_legitimate_successor(client, db_session):
+def test_refresh_after_family_revoked_via_reuse_returns_401_for_legitimate_successor(
+    client, db_session, monkeypatch
+):
+    """Strict mode only: when REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE is on, a
+    reuse event blows the family so even the legitimate successor dies. (The
+    default no-revoke behavior is covered by test_stale_replay_keeps_live_session_alive.)"""
     from jarvis_auth.app.core import refresh_cache
-
+    # Patch the settings object auth.py actually holds: the test module reloads
+    # the settings module (line ~21), so a fresh `from core.settings import
+    # settings` can diverge from auth.py's import-bound reference. Target the
+    # attribute through the auth module to stay in sync regardless of order.
+    monkeypatch.setattr(
+        "jarvis_auth.app.api.auth.settings.refresh_token_revoke_family_on_reuse", True
+    )
     refresh_cache.clear()
     tokens = _register(client, "rot_legit_blocked@example.com")
     r1 = tokens["refresh_token"]

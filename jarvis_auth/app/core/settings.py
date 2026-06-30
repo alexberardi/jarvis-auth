@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(14, alias="REFRESH_TOKEN_EXPIRE_DAYS")
     refresh_token_grace_seconds: int = Field(10, alias="REFRESH_TOKEN_GRACE_SECONDS")
+    # When a rotated (ancestor) refresh token is replayed and we cannot serve a
+    # cached successor, revoke the WHOLE family (strict theft-detection) only if
+    # this is on. Default off: a benign replay (two client refresh paths, a lost
+    # response over a flaky link, or an auth restart that wiped the in-process
+    # grace cache) must NOT sign out the live session. See api/auth.py:/auth/refresh.
+    refresh_token_revoke_family_on_reuse: bool = Field(
+        False, alias="REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE"
+    )
     database_url: str = Field(..., alias="DATABASE_URL")
     admin_token: str = Field(..., alias="JARVIS_AUTH_ADMIN_TOKEN")
 
