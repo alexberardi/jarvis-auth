@@ -7,27 +7,23 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from jarvis_auth.app.core import refresh_cache, security
+from jarvis_auth.app.core.logging import get_logger
 from jarvis_auth.app.core.settings import settings
-from jarvis_auth.app.db.session import SessionLocal
 from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
 from jarvis_auth.app.schemas import auth as auth_schema
 from jarvis_auth.app.schemas import user as user_schema
-from jarvis_auth.app.api.deps import get_current_user, oauth2_scheme
+# get_db MUST be deps.get_db, not a module-local duplicate: get_current_user
+# resolves deps.get_db, and FastAPI caches dependencies by callable identity.
+# A second callable means a second Session, so endpoints that mutate
+# current_user would commit the wrong session and silently lose the writes.
+from jarvis_auth.app.api.deps import get_current_user, get_db, oauth2_scheme
 from jarvis_auth.app.api.invites import _get_valid_invite
-from jarvis_auth.app.services import account_deletion
+from jarvis_auth.app.services import account_deletion, token_revocation
 from jarvis_auth.app.services.auth_service import _get_user_household_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 def _ensure_username(email: str, username: str | None) -> str:
@@ -166,12 +162,21 @@ def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if not user or not security.verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    # Same message as bad credentials so account state isn't probeable.
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if user.must_change_password and user.temp_password_expired:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Temporary password expired. Ask your administrator for a new one.",
+        )
 
     access_token, refresh_token = _create_tokens(db, user)
     return auth_schema.TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         user=user_schema.UserOut.model_validate(user),
+        must_change_password=user.must_change_password,
     )
 
 
@@ -190,17 +195,38 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
     if record.is_expired:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
 
-    user = db.query(models.User).filter(models.User.id == record.user_id).first()
-    if not user:
+    # Lock the user row so rotation serializes with revoke-all (logout,
+    # change-password, admin reset). Without it, a rotation straddling a
+    # revocation can mint an unrevoked successor and resurrect the session.
+    # No-op on SQLite (tests).
+    user = (
+        db.query(models.User)
+        .filter(models.User.id == record.user_id)
+        .with_for_update()
+        .first()
+    )
+    # Generic detail: account state must not be probeable via refresh.
+    if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    if user.must_change_password and user.temp_password_expired:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Temporary password expired. Ask your administrator for a new one.",
+        )
+    # Re-read the token row under the lock — a concurrent revocation may have
+    # flipped `revoked` after our unlocked SELECT above.
+    db.refresh(record)
 
     now = datetime.now(timezone.utc)
 
     if record.revoked or record.rotated_at is not None:
         # Grace window: the same parent token was just rotated within the
         # last `refresh_token_grace_seconds`. Return the successor we already
-        # minted (cached in-process, keyed by the parent token row id).
-        if record.rotated_at is not None:
+        # minted (cached in-process, keyed by the parent token row id). Never
+        # serve it for a revoked row — revocation purges the cache, but the
+        # strict on-reuse family nuke doesn't, and a racing refresh can
+        # re-populate it after the purge.
+        if not record.revoked and record.rotated_at is not None:
             rotated_at = record.rotated_at
             if rotated_at.tzinfo is None:
                 rotated_at = rotated_at.replace(tzinfo=timezone.utc)
@@ -212,6 +238,7 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
                         access_token=access_token,
                         refresh_token=cached_plain,
                         user=user_schema.UserOut.model_validate(user),
+                        must_change_password=user.must_change_password,
                     )
                 # Cache miss inside the grace window = process restart after
                 # rotation (the in-process cache is volatile). We can't serve
@@ -267,7 +294,77 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
         access_token=access_token,
         refresh_token=new_plain,
         user=user_schema.UserOut.model_validate(user),
+        must_change_password=user.must_change_password,
     )
+
+
+@router.post("/auth/change-password", response_model=auth_schema.TokenResponse)
+def change_password(
+    payload: auth_schema.ChangePasswordRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change the caller's password (also clears an admin-issued temp password).
+
+    Revokes every existing refresh token — a password change must invalidate
+    all other sessions — and returns a fresh token pair for this one, which
+    the client MUST adopt.
+    """
+    if not security.verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current password",
+        )
+
+    current_user.password_hash = security.hash_password(payload.new_password)
+    current_user.must_change_password = False
+    current_user.temp_password_expires_at = None
+    revoked = token_revocation.revoke_user_refresh_tokens(db, current_user.id)
+    db.commit()
+
+    # Audit events go through JarvisLogger so they reach jarvis-logs; the
+    # stdlib module logger only feeds the console (and drops `extra` fields).
+    get_logger().info("password_changed", user_id=current_user.id, revoked_tokens=revoked)
+
+    access_token, refresh_token = _create_tokens(db, current_user)
+    return auth_schema.TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=user_schema.UserOut.model_validate(current_user),
+        must_change_password=False,
+    )
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(payload: auth_schema.LogoutRequest, db: Annotated[Session, Depends(get_db)]) -> Response:
+    """Revoke the presented refresh token's session (or all of the user's).
+
+    Authenticates with the refresh token itself — no Bearer header — because
+    logout must work when the access token has already expired. Always 204:
+    an unknown/already-revoked token reveals nothing and the outcome (that
+    token no longer works) is identical.
+    """
+    refresh_hash = security.hash_refresh_token(payload.refresh_token)
+    record = (
+        db.query(models.RefreshToken)
+        .filter(models.RefreshToken.token_hash == refresh_hash)
+        .first()
+    )
+    if record:
+        if payload.all_devices:
+            revoked = token_revocation.revoke_user_refresh_tokens(db, record.user_id)
+        else:
+            revoked = token_revocation.revoke_family(db, record.family_id, record.user_id)
+        db.commit()
+        get_logger().info(
+            "user_logged_out",
+            user_id=record.user_id,
+            all_devices=payload.all_devices,
+            revoked_tokens=revoked,
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/auth/me", response_model=user_schema.UserOut)

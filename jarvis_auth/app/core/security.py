@@ -64,6 +64,19 @@ def decode_token(token: str) -> Dict[str, Any]:
         raise
 
 
+# No 0/O/1/l/I/5/S/8/B — temp passwords get relayed verbally or retyped from a screen.
+_TEMP_PASSWORD_ALPHABET = "abcdefghjkmnpqrtuvwxyz234679ACDEFGHJKMNPQRTUVWXYZ"
+
+
+def generate_temp_password() -> str:
+    """Generate a readable one-time password like 'xK4m-Tq9w-Rj2n'."""
+    groups = [
+        "".join(secrets.choice(_TEMP_PASSWORD_ALPHABET) for _ in range(4))
+        for _ in range(3)
+    ]
+    return "-".join(groups)
+
+
 def generate_refresh_token_pair() -> tuple[str, str]:
     """Return (plain_refresh_token, hashed_refresh_token)."""
     token = secrets.token_urlsafe(48)

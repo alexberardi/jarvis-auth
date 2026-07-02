@@ -153,23 +153,24 @@ Don't round-trip. Each service reads `AUTH_SECRET_KEY` from env and decodes the 
 
 ## Invariants & gotchas
 
-1. **`api/routes/*` is dead code.** A partial refactor introduced `api/routes/auth.py`, `api/routes/users.py`, and `api/routes/__init__.py` — but `main.py` does NOT wire these up. The active routers are in `api/auth.py`, `api/internal.py`, `api/admin_*.py`, `api/households.py`, `api/invites.py`. **Add new routes to `api/*.py`, not `api/routes/*.py`.** This dead code path is also where the only `/auth/logout` definition exists — the running service has no working logout endpoint. Clients should discard tokens locally; the refresh token will expire on its own.
+1. **`api/routes/*` is dead code.** A partial refactor introduced `api/routes/auth.py`, `api/routes/users.py`, and `api/routes/__init__.py` — but `main.py` does NOT wire these up. The active routers are in `api/auth.py`, `api/internal.py`, `api/admin_*.py`, `api/households.py`, `api/invites.py`, `api/superuser_views.py`. **Add new routes to `api/*.py`, not `api/routes/*.py`.**
 2. **Env var is `AUTH_SECRET_KEY`, not `SECRET_KEY`.** Older docs (and the meta CLAUDE.md) say `SECRET_KEY` — this is wrong for jarvis-auth itself. All other services share the same secret under `SECRET_KEY` for JWT validation; here it's read as `AUTH_SECRET_KEY` via Pydantic alias.
 3. **Refresh tokens ARE rotated** (since 2026-05, migration `a3b4c5d6e7f8`). `/auth/refresh` mints a new refresh token each call and marks the parent `rotated_at`; tokens are chained into a `family_id`. A `REFRESH_TOKEN_GRACE_SECONDS` (default 10s) in-process cache (`core/refresh_cache.py`) lets a benign double-submit of the just-rotated parent re-get the cached successor instead of failing. **Client code MUST adopt and persist the returned refresh token** — replaying a rotated one 401s. By default a stale replay does NOT revoke the family (a flaky-network mobile client replays far more often than tokens are stolen, and the in-process cache is lost on every restart → a restart-during-grace would otherwise nuke live sessions); set `REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE=true` to restore strict whole-family revocation. The grace cache is in-process only — auth must stay single-worker until it's backed by Redis/Postgres.
 4. **JWT validation is local-only — revocation is eventually consistent.** Even after marking a user inactive or deleting them, their unexpired access token (≤30 min) still works in downstream services. If you need stricter revocation, shorten `ACCESS_TOKEN_EXPIRE_MINUTES`. There is **no** `/internal/validate-jwt` endpoint and adding one would invert the design.
 5. **`JARVIS_AUTH_ADMIN_TOKEN` is special.** It's the master key for `/admin/*` endpoints. It's *only* used by trusted infrastructure (installer, config-service first-boot). Do not pass it from user-facing code or non-bootstrap contexts.
 6. **`/auth/setup` is one-shot.** Once any superuser exists, it returns 409. There is no other supported path to create the first superuser. Treat as installer-only.
 7. **Refresh tokens cascade-delete with their user.** `CASCADE` is on `RefreshToken.user_id` and `HouseholdMembership.user_id`. Deleting a user (admin action) revokes all their tokens automatically. The `Setting` table is NOT cascaded — settings scoped to `user_id` survive user deletion. Likely needs cleanup logic if you support user deletion.
-8. **No password reset / password change endpoints.** Deliberately out of scope (would require an email service). If a user forgets their password, an admin must delete and re-create them.
-9. **CORS allow-list:** browser clients are `jarvis-admin`, `jarvis-web`, and `jarvis-node-mobile`. Set `CORS_ALLOWED_ORIGINS` to a comma-separated list. Default is `http://localhost:5173` (admin dev server only).
-10. **Settings table scoping is `(key, household_id, node_id, user_id)` unique.** A `key` can have one row per scope tuple. Cascade lookup: user → node → household → NULL (system default). Don't query directly — use `jarvis-settings-client`.
+8. **Password reset is admin-driven (no email).** A superuser issues a temp password via `POST /superuser/users/{id}/temp-password` (plaintext returned ONCE, never stored/logged; expires after `TEMP_PASSWORD_EXPIRE_HOURS`, default 24). This sets `users.must_change_password` and revokes every session. Login with the temp password succeeds but returns `must_change_password: true` — clients must gate on it and force `POST /auth/change-password`, which clears the flag, revokes all other sessions, and returns a fresh token pair the client MUST adopt. Server-side backstops: **both login AND refresh** reject inactive users (generic 401) and expired temp passwords (distinct 401), so a temp session can't outlive its expiry by rotating. Revocation and rotation serialize on a `SELECT ... FOR UPDATE` of the user row, revocation purges `core/refresh_cache` (via `services/token_revocation.py`), and the grace path never serves a successor for a revoked row.
+9. **`get_db` in `api/auth.py` IS `deps.get_db` — never redefine it locally.** FastAPI caches dependencies by callable identity; a module-local duplicate gives `get_current_user` and the endpoint two different sessions, so mutations on `current_user` commit against the wrong session and are silently rolled back in prod while tests (which override both) stay green. Pinned by `test_auth_get_db_is_deps_get_db`.
+10. **CORS allow-list:** browser clients are `jarvis-admin`, `jarvis-web`, and `jarvis-node-mobile`. Set `CORS_ALLOWED_ORIGINS` to a comma-separated list. Default is `http://localhost:5173` (admin dev server only).
+11. **Settings table scoping is `(key, household_id, node_id, user_id)` unique.** A `key` can have one row per scope tuple. Cascade lookup: user → node → household → NULL (system default). Don't query directly — use `jarvis-settings-client`.
 
 ---
 
 ## Data model
 
 ```python
-User                    # id, email (unique), username (unique), password_hash, is_active, is_superuser
+User                    # id, email (unique), username (unique), password_hash, is_active, is_superuser, must_change_password, temp_password_expires_at
 RefreshToken            # user_id (CASCADE), token_hash, expires_at, revoked
 AppClient               # app_id (unique), name, key_hash, is_active, last_rotated_at
 Household               # id (UUID str), name
@@ -192,6 +193,8 @@ All timestamps timezone-aware UTC. Models in `jarvis_auth/app/db/models.py`.
 | POST | `/auth/register` | Auto-login. Optional `invite_code` body field or `X-Household-Id` header. Otherwise creates "My Home" household, user becomes admin. |
 | POST | `/auth/login` | Email + password → tokens |
 | POST | `/auth/refresh` | Refresh token in body → new access token **+ a newly rotated refresh token** (client must adopt it). 10s grace re-serves the successor on a benign double-submit. |
+| POST | `/auth/change-password` | Bearer JWT. Verifies current password, revokes ALL sessions, returns a fresh token pair. Clears `must_change_password`. |
+| POST | `/auth/logout` | Refresh token in body (no Bearer — works with an expired access token). Revokes that token's family; `all_devices: true` revokes every session. Always 204. |
 | GET | `/auth/me` | Requires Bearer JWT |
 | GET | `/auth/setup-status` | Public: `{needs_setup: bool}` |
 | POST | `/auth/setup` | One-shot: creates first superuser. 409 if already done. |
@@ -211,6 +214,14 @@ All timestamps timezone-aware UTC. Models in `jarvis_auth/app/db/models.py`.
 |---|---|---|
 | POST | `/invites` | Create invite. Body: household_id, default_role, max_uses?, expires_at? |
 | (other CRUD per file) |  |  |
+
+### Superuser views (`api/superuser_views.py`, Bearer JWT + `is_superuser` — the admin UI's surface)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/superuser/households` | All households |
+| GET | `/superuser/nodes` | All nodes |
+| GET | `/superuser/users` | All users + household memberships + `must_change_password` |
+| POST | `/superuser/users/{id}/temp-password` | Issue temp password (see Invariants #8). Body optional: `{temp_password?, expires_in_hours?}` |
 
 ### Admin: app clients (`api/admin_app_clients.py`, `X-Jarvis-Admin-Token`)
 | Method | Path |
@@ -263,6 +274,7 @@ All timestamps timezone-aware UTC. Models in `jarvis_auth/app/db/models.py`.
 | `AUTH_ALGORITHM` | no | `HS256` | JWT algorithm |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `30` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | no | `14` | Refresh token lifetime |
+| `TEMP_PASSWORD_EXPIRE_HOURS` | no | `24` | Admin-issued temp password lifetime |
 | `DATABASE_URL` | yes | — | PostgreSQL connection string |
 | `JARVIS_AUTH_ADMIN_TOKEN` | yes | — | Master admin token for `/admin/*` endpoints |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:5173` | Comma-separated browser origins |
@@ -330,15 +342,14 @@ Run: `poetry run pytest`.
 | `JARVIS_AUTH_ADMIN_TOKEN` unset/wrong | All `/admin/*` requests 401 |
 | Refresh token expired | `/auth/refresh` returns 401; client must re-login |
 | Node deactivated mid-session | Next call to `/internal/validate-node` returns `valid=false` → service rejects |
-| Superuser deactivated | Their JWT keeps working until expiry (≤30 min); can't be force-logged-out |
+| Superuser deactivated | Their JWT keeps working until expiry (≤30 min); refresh is rejected, so the session ends there. For instant lockout, also issue a temp-password reset (revokes all refresh tokens). |
 
 ---
 
 ## Out of scope / explicitly not here
 
-- **Password reset / change.** No email service in the stack; deliberately deferred.
+- **Email-based password reset.** No email service in the stack; resets are admin-driven temp passwords (Invariants #8).
 - **SSO / OAuth / OIDC.** Local user/password only.
-- **Logout endpoint.** Code exists in dead `api/routes/auth.py` but isn't wired up. Clients discard tokens locally.
-- **Refresh token rotation.** Known limitation. Hardening item.
+- **Instant access-token revocation.** Logout/change-password/reset revoke refresh tokens only; an unexpired access token (≤30 min default) keeps working downstream because JWT validation is local (Invariants #4).
 - **Per-resource RBAC.** Only household-level roles; finer-grained authorization lives in each service.
 - **Audit log.** No `audit_events` table. Logs go to jarvis-logs as JSON events; query there if you need an audit trail.

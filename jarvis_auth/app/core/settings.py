@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     refresh_token_revoke_family_on_reuse: bool = Field(
         False, alias="REFRESH_TOKEN_REVOKE_FAMILY_ON_REUSE"
     )
+    temp_password_expire_hours: int = Field(24, alias="TEMP_PASSWORD_EXPIRE_HOURS")
     database_url: str = Field(..., alias="DATABASE_URL")
     admin_token: str = Field(..., alias="JARVIS_AUTH_ADMIN_TOKEN")
 

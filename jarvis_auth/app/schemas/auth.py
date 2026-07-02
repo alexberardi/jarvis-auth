@@ -19,6 +19,9 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: UserOut | None = None
+    # True when the user logged in with an admin-issued temporary password and
+    # clients must force a change via /auth/change-password before normal use.
+    must_change_password: bool = False
 
 
 class RefreshRequest(BaseModel):
@@ -29,8 +32,14 @@ class AccountDeleteRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=255)
+
+
 class LogoutRequest(BaseModel):
     refresh_token: str
+    all_devices: bool = False
 
 
 class RegisterResponse(BaseModel):
