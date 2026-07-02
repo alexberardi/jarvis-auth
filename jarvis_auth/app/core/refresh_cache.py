@@ -34,6 +34,11 @@ def get(parent_id: int) -> str | None:
         return plain
 
 
+def delete(parent_id: int) -> None:
+    with _LOCK:
+        _STORE.pop(parent_id, None)
+
+
 def clear() -> None:
     with _LOCK:
         _STORE.clear()

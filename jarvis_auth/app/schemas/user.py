@@ -26,6 +26,7 @@ class UserOut(BaseModel):
     email: EmailStr
     username: str | None = None
     is_superuser: bool = False
+    must_change_password: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
