@@ -160,7 +160,13 @@ def register(
 @router.post("/auth/login", response_model=auth_schema.TokenResponse)
 def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_db)]):
     user = db.query(models.User).filter(models.User.email == payload.email).first()
-    if not user or not security.verify_password(payload.password, user.password_hash):
+    # Always run a bcrypt verification — against the user's real hash if the
+    # email exists, otherwise a dummy — so response time doesn't reveal whether
+    # an email is registered (login user-enumeration via timing). Short-circuit
+    # `not user or not verify(...)` would skip the hash for unknown emails.
+    password_hash = user.password_hash if user else security.DUMMY_PASSWORD_HASH
+    password_valid = security.verify_password(payload.password, password_hash)
+    if not user or not password_valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     # Same message as bad credentials so account state isn't probeable.
     if not user.is_active:

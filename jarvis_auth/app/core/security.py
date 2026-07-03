@@ -14,6 +14,12 @@ logger = get_logger()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# A throwaway hash used to equalize login timing when the email doesn't exist.
+# Verifying a supplied password against this costs the same as a real bcrypt
+# check, so an attacker can't distinguish registered emails by response time
+# (login user-enumeration). Computed once at import so it matches the live cost.
+DUMMY_PASSWORD_HASH = pwd_context.hash(secrets.token_urlsafe(32))
+
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
