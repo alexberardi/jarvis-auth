@@ -39,11 +39,64 @@ class Settings(BaseSettings):
     )
     auth_rate_limit_max_keys: int = Field(50_000, alias="AUTH_RATE_LIMIT_MAX_KEYS")
 
+    # Deployment environment. When "production"/"prod", a weak/placeholder secret
+    # is fatal at boot; otherwise it's a loud warning (so dev/self-host boxes on a
+    # not-yet-hardened default still start). Set JARVIS_ENV=production in prod.
+    jarvis_env: str = Field("development", alias="JARVIS_ENV")
+
     # Service discovery for outbound best-effort purge calls on account deletion.
     # Prefer config-service discovery; these env overrides take precedence when set.
     config_url: str | None = Field(None, alias="JARVIS_CONFIG_URL")
     command_center_url: str | None = Field(None, alias="JARVIS_COMMAND_CENTER_URL")
     notifications_url: str | None = Field(None, alias="JARVIS_NOTIFICATIONS_URL")
+
+    @property
+    def is_production(self) -> bool:
+        return self.jarvis_env.strip().lower() in {"production", "prod"}
+
+    def insecure_secrets(self) -> list[str]:
+        """Names of security-critical secrets that are empty, a known placeholder,
+        or too short/low-entropy to be safe. Empty list = all good.
+
+        ``auth_secret_key`` signs/validates every JWT in the fleet and
+        ``admin_token`` gates all ``/admin/*`` endpoints — a placeholder here means
+        anyone can forge tokens or drive admin ops against a publicly-known value.
+        """
+        placeholders = {
+            "", "change-me", "changeme", "change_me", "__set_me__",
+            "changethis", "secret", "your-secret-key",
+        }
+
+        def _insecure(value: str | None) -> bool:
+            v = (value or "").strip()
+            return v.lower() in placeholders or len(v) < 16
+
+        problems: list[str] = []
+        if _insecure(self.auth_secret_key):
+            problems.append("AUTH_SECRET_KEY")
+        if _insecure(self.admin_token):
+            problems.append("JARVIS_AUTH_ADMIN_TOKEN")
+        return problems
+
+
+def enforce_secret_security(cfg: "Settings", log) -> None:
+    """Warn on insecure secrets everywhere; abort startup only in production."""
+    problems = cfg.insecure_secrets()
+    if not problems:
+        return
+    detail = (
+        ", ".join(problems)
+        + " is empty, a known placeholder, or shorter than 16 chars. Set a strong "
+        "random value (e.g. `openssl rand -hex 32`)."
+    )
+    if cfg.is_production:
+        raise RuntimeError(f"Refusing to start in production — insecure auth config: {detail}")
+    # Single pre-formatted arg: the app logger (JarvisLogger) doesn't take
+    # %-style args like the stdlib logger.
+    log.warning(
+        "⚠️  Insecure auth config: " + detail
+        + "  (set JARVIS_ENV=production to make this fatal)"
+    )
 
 
 @lru_cache()
