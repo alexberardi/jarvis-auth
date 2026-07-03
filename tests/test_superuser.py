@@ -179,20 +179,23 @@ class TestIsSuperuserInJWT:
 class TestAdminUsersEndpoints:
     """Test admin user management endpoints."""
 
-    def test_update_superuser_status_requires_app_auth(self, client, regular_user):
-        """Endpoint should require app-to-app auth."""
+    def test_update_superuser_status_requires_auth(self, client, regular_user):
+        """Endpoint should require the admin token."""
         resp = client.put(
             "/admin/users/1/superuser",
             json={"is_superuser": True},
         )
         assert resp.status_code == 401
 
-    def test_update_superuser_status_with_app_auth(self, client, db_session, app_client_creds):
-        """Should update superuser status with app-to-app auth."""
-        # Create a user to modify
+    def test_update_superuser_status_rejects_app_auth(self, client, app_client_creds):
+        """App-to-app credentials must NOT be able to grant superuser.
+
+        Granting superuser is a fleet-wide privilege-escalation primitive, so it
+        is gated on the master admin token, not the app creds every service holds.
+        """
         resp = client.post(
             "/auth/register",
-            json={"email": "toupdate@example.com", "password": "password123"},
+            json={"email": "noescalate@example.com", "password": "password123"},
         )
         user_id = resp.json()["user"]["id"]
 
@@ -205,36 +208,44 @@ class TestAdminUsersEndpoints:
                 "X-Jarvis-App-Key": app_key,
             },
         )
+        assert resp.status_code == 401
+
+    def test_update_superuser_status_with_admin_token(self, client):
+        """Should update superuser status with the master admin token."""
+        # Create a user to modify
+        resp = client.post(
+            "/auth/register",
+            json={"email": "toupdate@example.com", "password": "password123"},
+        )
+        user_id = resp.json()["user"]["id"]
+
+        resp = client.put(
+            f"/admin/users/{user_id}/superuser",
+            json={"is_superuser": True},
+            headers={"X-Jarvis-Admin-Token": "admin-test-token"},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
         assert data["is_superuser"] is True
         assert "granted" in data["message"]
 
-    def test_update_superuser_status_user_not_found(self, client, app_client_creds):
+    def test_update_superuser_status_user_not_found(self, client):
         """Should return 404 for non-existent user."""
-        app_id, app_key = app_client_creds
         resp = client.put(
             "/admin/users/99999/superuser",
             json={"is_superuser": True},
-            headers={
-                "X-Jarvis-App-Id": app_id,
-                "X-Jarvis-App-Key": app_key,
-            },
+            headers={"X-Jarvis-Admin-Token": "admin-test-token"},
         )
         assert resp.status_code == 404
 
-    def test_get_user_admin(self, client, app_client_creds, regular_user):
-        """Should get admin view of user."""
+    def test_get_user_admin(self, client, regular_user):
+        """Should get admin view of user with the master admin token."""
         user_id = regular_user["user"]["id"]
-        app_id, app_key = app_client_creds
 
         resp = client.get(
             f"/admin/users/{user_id}",
-            headers={
-                "X-Jarvis-App-Id": app_id,
-                "X-Jarvis-App-Key": app_key,
-            },
+            headers={"X-Jarvis-Admin-Token": "admin-test-token"},
         )
         assert resp.status_code == 200
         data = resp.json()

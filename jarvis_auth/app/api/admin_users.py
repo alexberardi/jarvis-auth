@@ -1,7 +1,10 @@
 """Admin endpoints for user management.
 
-These endpoints require app-to-app authentication and are used for
-administrative operations like managing superuser status.
+These endpoints require the master admin token (`X-Jarvis-Admin-Token`) and are
+used by trusted infrastructure for administrative operations like managing
+superuser status. They are NOT app-to-app callable: granting superuser is a
+fleet-wide privilege-escalation primitive, so it must not be reachable with the
+app credentials every service holds.
 """
 
 from typing import Annotated
@@ -10,12 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from jarvis_auth.app.api.dependencies.app_auth import require_app_client
+from jarvis_auth.app.api.dependencies.admin_auth import require_admin_token
 from jarvis_auth.app.api.deps import get_db
 from jarvis_auth.app.db import models
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin_token)])
 
 
 class SuperuserUpdateRequest(BaseModel):
@@ -52,11 +55,10 @@ def update_superuser_status(
     user_id: int,
     payload: SuperuserUpdateRequest,
     db: Annotated[Session, Depends(get_db)],
-    _app_client: Annotated[models.AppClient, Depends(require_app_client)],
 ) -> SuperuserUpdateResponse:
     """Update a user's superuser status.
 
-    Requires app-to-app authentication. This is an administrative endpoint
+    Requires the master admin token. This is an administrative endpoint
     for managing which users have superuser access.
     """
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -92,11 +94,10 @@ def update_superuser_status(
 def get_user_admin(
     user_id: int,
     db: Annotated[Session, Depends(get_db)],
-    _app_client: Annotated[models.AppClient, Depends(require_app_client)],
 ) -> UserAdminResponse:
     """Get admin view of a user.
 
-    Requires app-to-app authentication.
+    Requires the master admin token.
     """
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
@@ -121,11 +122,10 @@ def get_user_admin(
 def get_user_by_email_admin(
     email: str,
     db: Annotated[Session, Depends(get_db)],
-    _app_client: Annotated[models.AppClient, Depends(require_app_client)],
 ) -> UserAdminResponse:
     """Get admin view of a user by email.
 
-    Requires app-to-app authentication.
+    Requires the master admin token.
     """
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
