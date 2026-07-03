@@ -14,6 +14,7 @@ from jarvis_auth.app.api import invites
 from jarvis_auth.app.api import superuser_views
 from jarvis_auth.app.api.deps import require_settings_auth, require_superuser
 from jarvis_auth.app.core.logging import get_logger, setup_logging
+from jarvis_auth.app.core.settings import enforce_secret_security, settings
 from jarvis_auth.app.db import base, session as db_session
 from jarvis_auth.app.services.settings_service import get_settings_service
 
@@ -22,6 +23,8 @@ logger = get_logger()
 
 def create_app() -> FastAPI:
     setup_logging()
+    # Warn (dev) or refuse to boot (production) on placeholder/weak secrets.
+    enforce_secret_security(settings, logger)
     app = FastAPI(title="Jarvis Auth")
 
     _allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
