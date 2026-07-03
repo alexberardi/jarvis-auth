@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from jarvis_auth.app.core import refresh_cache, security
+from jarvis_auth.app.core import rate_limit, refresh_cache, security
 from jarvis_auth.app.core.logging import get_logger
 from jarvis_auth.app.core.settings import settings
 from jarvis_auth.app.db import models
@@ -24,6 +24,21 @@ from jarvis_auth.app.services.auth_service import _get_user_household_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def enforce_auth_rate_limit(request: Request) -> str:
+    """Per-IP flood guard for the auth endpoints. Returns the caller IP so the
+    login handler can also apply the per-(email, IP) failed-login lockout."""
+    ip = rate_limit.client_ip(request, settings.auth_rate_limit_trust_forwarded_for)
+    if settings.auth_rate_limit_enabled and not rate_limit.rate_limiter.check_ip(
+        ip, settings.auth_rate_limit_ip_per_minute
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please slow down.",
+            headers={"Retry-After": "60"},
+        )
+    return ip
 
 
 def _ensure_username(email: str, username: str | None) -> str:
@@ -106,7 +121,12 @@ def _assign_household(
     return household_id
 
 
-@router.post("/auth/register", response_model=auth_schema.RegisterResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/auth/register",
+    response_model=auth_schema.RegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_auth_rate_limit)],
+)
 def register(
     payload: auth_schema.RegisterRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -158,7 +178,23 @@ def register(
 
 
 @router.post("/auth/login", response_model=auth_schema.TokenResponse)
-def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_db)]):
+def login(
+    payload: auth_schema.LoginRequest,
+    db: Annotated[Session, Depends(get_db)],
+    ip: Annotated[str, Depends(enforce_auth_rate_limit)],
+):
+    # Per-(email, IP) failed-login lockout: too many wrong passwords for this
+    # email FROM THIS IP → back off. Keyed on the pair so an attacker on another
+    # IP can't lock the real user out (no account-lockout DoS).
+    if settings.auth_rate_limit_enabled and rate_limit.rate_limiter.is_locked(
+        payload.email, ip, settings.auth_login_max_failures, settings.auth_login_lockout_seconds
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please try again later.",
+            headers={"Retry-After": str(settings.auth_login_lockout_seconds)},
+        )
+
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     # Always run a bcrypt verification — against the user's real hash if the
     # email exists, otherwise a dummy — so response time doesn't reveal whether
@@ -167,6 +203,10 @@ def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_
     password_hash = user.password_hash if user else security.DUMMY_PASSWORD_HASH
     password_valid = security.verify_password(payload.password, password_hash)
     if not user or not password_valid:
+        if settings.auth_rate_limit_enabled:
+            rate_limit.rate_limiter.record_failure(
+                payload.email, ip, settings.auth_login_lockout_seconds
+            )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     # Same message as bad credentials so account state isn't probeable.
     if not user.is_active:
@@ -177,6 +217,10 @@ def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_
             detail="Temporary password expired. Ask your administrator for a new one.",
         )
 
+    # Successful auth clears the failed-attempt counter for this (email, IP).
+    if settings.auth_rate_limit_enabled:
+        rate_limit.rate_limiter.clear_failures(payload.email, ip)
+
     access_token, refresh_token = _create_tokens(db, user)
     return auth_schema.TokenResponse(
         access_token=access_token,
@@ -186,7 +230,11 @@ def login(payload: auth_schema.LoginRequest, db: Annotated[Session, Depends(get_
     )
 
 
-@router.post("/auth/refresh", response_model=auth_schema.TokenResponse)
+@router.post(
+    "/auth/refresh",
+    response_model=auth_schema.TokenResponse,
+    dependencies=[Depends(enforce_auth_rate_limit)],
+)
 def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(get_db)]):
     refresh_hash = security.hash_refresh_token(payload.refresh_token)
     # Do NOT pre-filter revoked — we need to inspect rotated_at/revoked to

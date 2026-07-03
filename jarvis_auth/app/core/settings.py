@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     database_url: str = Field(..., alias="DATABASE_URL")
     admin_token: str = Field(..., alias="JARVIS_AUTH_ADMIN_TOKEN")
 
+    # Brute-force protection for /auth/{login,register,refresh} (in-memory; auth
+    # is single-worker). Two layers: a global per-IP sliding window, and a
+    # per-(email, IP) failed-login lockout keyed on the pair — never email alone —
+    # so an attacker can't lock the real user out from a different IP.
+    auth_rate_limit_enabled: bool = Field(True, alias="AUTH_RATE_LIMIT_ENABLED")
+    auth_rate_limit_ip_per_minute: int = Field(30, alias="AUTH_RATE_LIMIT_IP_PER_MINUTE")
+    auth_login_max_failures: int = Field(8, alias="AUTH_LOGIN_MAX_FAILURES")
+    auth_login_lockout_seconds: int = Field(900, alias="AUTH_LOGIN_LOCKOUT_SECONDS")
+    # Only trust X-Forwarded-For (right-most hop) when auth sits behind a proxy
+    # that sets it; default off so a direct-to-auth client can't spoof its IP.
+    auth_rate_limit_trust_forwarded_for: bool = Field(
+        False, alias="AUTH_RATE_LIMIT_TRUST_FORWARDED_FOR"
+    )
+    auth_rate_limit_max_keys: int = Field(50_000, alias="AUTH_RATE_LIMIT_MAX_KEYS")
+
     # Service discovery for outbound best-effort purge calls on account deletion.
     # Prefer config-service discovery; these env overrides take precedence when set.
     config_url: str | None = Field(None, alias="JARVIS_CONFIG_URL")
