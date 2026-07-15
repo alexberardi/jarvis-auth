@@ -15,6 +15,12 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # bcrypt 5.x raises on >72-byte inputs where 4.x truncated, which breaks
+      # passlib 1.7.4's bcrypt backend probe. passlib is abandoned, so pin to
+      # bcrypt 4.x until we migrate off passlib. (See closed PR #21.)
+      - dependency-name: "bcrypt"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
