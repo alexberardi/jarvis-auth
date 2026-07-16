@@ -264,6 +264,25 @@ def test_refresh_rotates_returns_new_refresh_token(client):
     assert "exp" in payload
 
 
+def test_refresh_reads_grace_window_from_settings_service(client):
+    """The refresh path resolves the grace window through the settings service
+    (DB-backed, live-tunable) rather than the @lru_cache'd pydantic Settings, so
+    an admin override takes effect without a service restart. Proven by asserting
+    the settings service is consulted with the right key + default."""
+    from unittest.mock import MagicMock, patch
+
+    tokens = _register(client, "grace_from_service@example.com")
+    r1 = tokens["refresh_token"]
+
+    svc = MagicMock()
+    svc.get_int.return_value = 10
+    with patch("jarvis_auth.app.api.auth.get_settings_service", return_value=svc):
+        resp = client.post("/auth/refresh", json={"refresh_token": r1})
+
+    assert resp.status_code == 200
+    svc.get_int.assert_called_once_with("auth.token.refresh_grace_seconds", 10)
+
+
 def test_refresh_marks_old_rotated_and_chains_new(client, db_session):
     tokens = _register(client, "rot_chain@example.com")
     r1 = tokens["refresh_token"]
