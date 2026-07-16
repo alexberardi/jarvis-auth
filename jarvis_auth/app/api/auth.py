@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import uuid4
@@ -24,6 +25,42 @@ from jarvis_auth.app.services.auth_service import _get_user_household_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _resolve_refresh_grace_seconds(db: Session) -> int:
+    """Refresh-rotation grace window (seconds), live-tunable via the settings DB.
+
+    Read through the REQUEST's ``db`` session rather than the settings service —
+    which opens its own SessionLocal() per read and closes it. Doing that in the
+    middle of the refresh transaction opens a second connection (and, under the
+    single-connection test pool, its close() rolls back the in-flight rotation).
+    This is a single, system-scoped setting, so a direct system-scope read is
+    both correct and cheaper. Falls back to REFRESH_TOKEN_GRACE_SECONDS, then 10.
+    The ``auth.token.refresh_grace_seconds`` SettingDefinition still registers it
+    for the settings API so admins can set it.
+    """
+    row = (
+        db.query(models.Setting)
+        .filter(
+            models.Setting.key == "auth.token.refresh_grace_seconds",
+            models.Setting.household_id.is_(None),
+            models.Setting.node_id.is_(None),
+            models.Setting.user_id.is_(None),
+        )
+        .first()
+    )
+    if row is not None and row.value not in (None, ""):
+        try:
+            return int(str(row.value).strip().strip('"'))
+        except (TypeError, ValueError):
+            pass
+    env = os.getenv("REFRESH_TOKEN_GRACE_SECONDS")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return 10
 
 
 def enforce_auth_rate_limit(request: Request) -> str:
@@ -273,6 +310,11 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
 
     now = datetime.now(timezone.utc)
 
+    # Live-tunable grace window, read through THIS request's session (see
+    # _resolve_refresh_grace_seconds) so a DB override takes effect without a
+    # restart — without opening a second connection mid-transaction.
+    grace_seconds = _resolve_refresh_grace_seconds(db)
+
     if record.revoked or record.rotated_at is not None:
         # Grace window: the same parent token was just rotated within the
         # last `refresh_token_grace_seconds`. Return the successor we already
@@ -284,7 +326,7 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
             rotated_at = record.rotated_at
             if rotated_at.tzinfo is None:
                 rotated_at = rotated_at.replace(tzinfo=timezone.utc)
-            if (now - rotated_at).total_seconds() <= settings.refresh_token_grace_seconds:
+            if (now - rotated_at).total_seconds() <= grace_seconds:
                 cached_plain = refresh_cache.get(record.id)
                 if cached_plain:
                     access_token = security.create_access_token(_build_jwt_claims(db, user))
@@ -341,7 +383,7 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
     db.commit()
     # Key is the parent (just-consumed) token row id, so a retry of the
     # parent within the grace window finds the cached successor.
-    refresh_cache.set(record.id, new_plain, settings.refresh_token_grace_seconds)
+    refresh_cache.set(record.id, new_plain, grace_seconds)
 
     access_token = security.create_access_token(_build_jwt_claims(db, user))
     return auth_schema.TokenResponse(

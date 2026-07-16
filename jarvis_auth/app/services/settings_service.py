@@ -27,6 +27,14 @@ SETTINGS_DEFINITIONS: list[SettingDefinition] = [
         env_fallback="REFRESH_TOKEN_EXPIRE_DAYS",
     ),
     SettingDefinition(
+        key="auth.token.refresh_grace_seconds",
+        category="auth.token",
+        value_type="int",
+        default=10,
+        description="Grace window (s) in which a benign double-submit of a just-rotated refresh token re-gets the cached successor instead of being rejected.",
+        env_fallback="REFRESH_TOKEN_GRACE_SECONDS",
+    ),
+    SettingDefinition(
         key="auth.algorithm",
         category="auth",
         value_type="string",
