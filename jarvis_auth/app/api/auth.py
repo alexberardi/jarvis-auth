@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import uuid4
@@ -9,7 +10,6 @@ from sqlalchemy.orm import Session
 from jarvis_auth.app.core import rate_limit, refresh_cache, security
 from jarvis_auth.app.core.logging import get_logger
 from jarvis_auth.app.core.settings import settings
-from jarvis_auth.app.services.settings_service import get_settings_service
 from jarvis_auth.app.db import models
 from jarvis_auth.app.db.models import HouseholdRole
 from jarvis_auth.app.schemas import auth as auth_schema
@@ -25,6 +25,42 @@ from jarvis_auth.app.services.auth_service import _get_user_household_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _resolve_refresh_grace_seconds(db: Session) -> int:
+    """Refresh-rotation grace window (seconds), live-tunable via the settings DB.
+
+    Read through the REQUEST's ``db`` session rather than the settings service —
+    which opens its own SessionLocal() per read and closes it. Doing that in the
+    middle of the refresh transaction opens a second connection (and, under the
+    single-connection test pool, its close() rolls back the in-flight rotation).
+    This is a single, system-scoped setting, so a direct system-scope read is
+    both correct and cheaper. Falls back to REFRESH_TOKEN_GRACE_SECONDS, then 10.
+    The ``auth.token.refresh_grace_seconds`` SettingDefinition still registers it
+    for the settings API so admins can set it.
+    """
+    row = (
+        db.query(models.Setting)
+        .filter(
+            models.Setting.key == "auth.token.refresh_grace_seconds",
+            models.Setting.household_id.is_(None),
+            models.Setting.node_id.is_(None),
+            models.Setting.user_id.is_(None),
+        )
+        .first()
+    )
+    if row is not None and row.value not in (None, ""):
+        try:
+            return int(str(row.value).strip().strip('"'))
+        except (TypeError, ValueError):
+            pass
+    env = os.getenv("REFRESH_TOKEN_GRACE_SECONDS")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return 10
 
 
 def enforce_auth_rate_limit(request: Request) -> str:
@@ -274,10 +310,10 @@ def refresh(payload: auth_schema.RefreshRequest, db: Annotated[Session, Depends(
 
     now = datetime.now(timezone.utc)
 
-    # Resolve the grace window through the settings service (DB-backed, with
-    # env/default fallback) rather than the @lru_cache'd pydantic Settings, so
-    # an admin override takes effect without a service restart.
-    grace_seconds = get_settings_service().get_int("auth.token.refresh_grace_seconds", 10)
+    # Live-tunable grace window, read through THIS request's session (see
+    # _resolve_refresh_grace_seconds) so a DB override takes effect without a
+    # restart — without opening a second connection mid-transaction.
+    grace_seconds = _resolve_refresh_grace_seconds(db)
 
     if record.revoked or record.rotated_at is not None:
         # Grace window: the same parent token was just rotated within the

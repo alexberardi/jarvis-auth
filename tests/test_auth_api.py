@@ -264,23 +264,26 @@ def test_refresh_rotates_returns_new_refresh_token(client):
     assert "exp" in payload
 
 
-def test_refresh_reads_grace_window_from_settings_service(client):
-    """The refresh path resolves the grace window through the settings service
-    (DB-backed, live-tunable) rather than the @lru_cache'd pydantic Settings, so
-    an admin override takes effect without a service restart. Proven by asserting
-    the settings service is consulted with the right key + default."""
-    from unittest.mock import MagicMock, patch
+def test_resolve_refresh_grace_seconds_db_override_then_default(client, db_session, monkeypatch):
+    """The grace window is live-tunable from the settings DB (system scope),
+    resolved via the request session; absent a DB row it falls back to the env
+    var, then the default 10 — no restart needed for an admin override."""
+    from jarvis_auth.app.api.auth import _resolve_refresh_grace_seconds
+    from jarvis_auth.app.db import models
 
-    tokens = _register(client, "grace_from_service@example.com")
-    r1 = tokens["refresh_token"]
+    monkeypatch.delenv("REFRESH_TOKEN_GRACE_SECONDS", raising=False)
+    assert _resolve_refresh_grace_seconds(db_session) == 10  # default
 
-    svc = MagicMock()
-    svc.get_int.return_value = 10
-    with patch("jarvis_auth.app.api.auth.get_settings_service", return_value=svc):
-        resp = client.post("/auth/refresh", json={"refresh_token": r1})
-
-    assert resp.status_code == 200
-    svc.get_int.assert_called_once_with("auth.token.refresh_grace_seconds", 10)
+    db_session.add(
+        models.Setting(
+            key="auth.token.refresh_grace_seconds",
+            value="45",
+            value_type="int",
+            category="auth.token",
+        )
+    )
+    db_session.commit()
+    assert _resolve_refresh_grace_seconds(db_session) == 45  # live DB override wins
 
 
 def test_refresh_marks_old_rotated_and_chains_new(client, db_session):
