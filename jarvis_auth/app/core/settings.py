@@ -9,6 +9,11 @@ class Settings(BaseSettings):
 
     auth_secret_key: str = Field(..., alias="AUTH_SECRET_KEY")
     auth_algorithm: str = Field("HS256", alias="AUTH_ALGORITHM")
+    # RSA private key for RS256, base64-encoded PKCS#8 PEM. Base64 because a raw
+    # PEM is multi-line and .env / docker-compose env blocks mangle those; the
+    # public half is derived from this rather than configured separately, so the
+    # two can never drift. Empty until the RS256 migration is provisioned.
+    auth_private_key: str = Field("", alias="AUTH_PRIVATE_KEY")
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(14, alias="REFRESH_TOKEN_EXPIRE_DAYS")
     refresh_token_grace_seconds: int = Field(10, alias="REFRESH_TOKEN_GRACE_SECONDS")

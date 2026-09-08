@@ -494,6 +494,29 @@ def delete_me(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/auth/public-key")
+def public_key():
+    """Publish the RS256 verification key.
+
+    Deliberately unauthenticated: a public key is not a secret, and the services
+    that verify our tokens need it *before* they can authenticate anything. The
+    response shape is fixed by the existing consumer — jarvis-recipes-server does
+    `resp.json().get("public_key")` and caches the result for its process
+    lifetime, so this must stay a plain {"public_key": <PEM>} object.
+
+    503 rather than 404 when no key is provisioned: the route exists, the key
+    just isn't there yet, and a consumer that gets no key must fail closed rather
+    than treat the absence as "no RS256 tokens exist".
+    """
+    pem = security.get_public_key_pem()
+    if not pem:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No RS256 public key configured",
+        )
+    return {"public_key": pem, "algorithm": "RS256"}
+
+
 @router.get("/auth/setup-status")
 def setup_status(db: Annotated[Session, Depends(get_db)]):
     """Check if initial setup is needed (no superusers exist)."""
